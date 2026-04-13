@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -120,6 +120,42 @@ def generated_window_name(round_key: str, team_one: str, team_two: str) -> str:
 def redirect_with_tab(pool_id: str, tab: str | None = None) -> str:
     safe_tab = tab if tab in VALID_POOL_TABS else "overview"
     return f"/pools/{pool_id}?tab={safe_tab}"
+
+
+def redirect_with_message(pool_id: str, tab: str, status: str, message: str) -> str:
+    query = urlencode({"tab": tab if tab in VALID_POOL_TABS else "overview", "flash_status": status, "flash_message": message})
+    return f"/pools/{pool_id}?{query}"
+
+
+def _series_priority(round_key: str, conference: str | None = None) -> int:
+    if round_key == "play_in":
+        return 0
+    if round_key == "round_1":
+        return 1
+    if round_key == "round_2":
+        return 2
+    if round_key == "conference_finals":
+        return 3 if (conference or "").lower() == "west" else 4
+    if round_key == "finals":
+        return 5
+    return 6
+
+
+def _window_sort_key(window: BettingWindow) -> tuple[int, int, int, datetime, datetime]:
+    conference = None
+    if window.config.get("series"):
+        conference = window.config["series"][0].get("conference")
+    is_early = 0 if window.bet_type == "early" else 1
+    lock_group = 0 if not window.is_locked else 1
+    return (is_early, lock_group, _series_priority(window.round_key, conference), window.opens_at, window.created_at)
+
+
+def _matchup_row_sort_key(row: dict[str, Any]) -> tuple[int, int, int, datetime, datetime]:
+    window = row["window"]
+    conference = row.get("series", {}).get("conference") if row.get("series") else None
+    is_early = 0 if row["type"] == "early" else 1
+    lock_group = 0 if not window.is_locked else 1
+    return (is_early, lock_group, _series_priority(window.round_key, conference), window.opens_at, window.created_at)
 
 
 def latest_result_payloads(items: list[ResultSnapshot]) -> dict[tuple[str, str], dict[str, Any]]:
@@ -683,11 +719,66 @@ async def parse_result_payload(request: Request) -> tuple[str, str, dict[str, An
     return ("series", str(form.get("scope_key") or ""), payload, source, override_reason)
 
 
+async def parse_bulk_result_payloads(request: Request, windows: list[BettingWindow]) -> list[tuple[str, dict[str, Any], str, str]]:
+    form = await request.form()
+    payloads: list[tuple[str, dict[str, Any], str, str]] = []
+    for window in windows:
+        if window.bet_type not in {"series", "play_in"}:
+            continue
+        for series in getattr(window, "render_series", []):
+            if not series["resolved"]:
+                continue
+            series_key = series["series_key"]
+            winner = str(form.get(f"result_winner_{series_key}") or "").strip()
+            games_count_raw = str(form.get(f"result_games_count_{series_key}") or "").strip()
+            display_score = str(form.get(f"display_score_{series_key}") or "").strip()
+            source = str(form.get(f"source_{series_key}") or "manual").strip() or "manual"
+            override_reason = str(form.get(f"override_reason_{series_key}") or "").strip()
+            is_marked = any([winner, games_count_raw, display_score, override_reason, source != "manual"])
+            if not is_marked:
+                continue
+            if not winner:
+                raise HTTPException(status_code=400, detail=f"Choose a winner before saving {series_key}.")
+            payload: dict[str, Any]
+            if window.bet_type == "play_in":
+                payload = {"winner": winner, "exact_result": "1-0"}
+            else:
+                if not games_count_raw:
+                    raise HTTPException(status_code=400, detail=f"Choose total games before saving {series_key}.")
+                try:
+                    games_count = max(4, min(7, int(games_count_raw)))
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=f"Total games must be between 4 and 7 for {series_key}.") from exc
+                payload = {"winner": winner, "exact_result": f"4-{games_count - 4}"}
+            if display_score:
+                payload["display_score"] = display_score
+            payloads.append((series_key, payload, source, override_reason))
+    return payloads
+
+
+def _delete_membership(session: Session, membership: Membership) -> None:
+    session.query(EventLog).filter(EventLog.actor_member_id == membership.id).update({"actor_member_id": None})
+    session.query(ResultSnapshot).filter(ResultSnapshot.created_by_member_id == membership.id).update({"created_by_member_id": None})
+    for submission in session.scalars(select(PickSubmission).where(PickSubmission.member_id == membership.id)).all():
+        session.delete(submission)
+    for entry in session.scalars(select(PaymentLedgerEntry).where(PaymentLedgerEntry.member_id == membership.id)).all():
+        session.delete(entry)
+    user_id = membership.user_id
+    session.delete(membership)
+    session.flush()
+    remaining_membership = session.scalar(select(Membership).where(Membership.user_id == user_id))
+    if not remaining_membership:
+        user = session.get(User, user_id)
+        if user:
+            session.delete(user)
+
+
 def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
     pool = session.get(Pool, pool_id)
     memberships = session.scalars(select(Membership).where(Membership.pool_id == pool_id)).all()
     users = {user.id: user for user in session.scalars(select(User).where(User.id.in_([m.user_id for m in memberships]))).all()}
     windows = session.scalars(select(BettingWindow).where(BettingWindow.pool_id == pool_id).order_by(BettingWindow.opens_at)).all()
+    windows = sorted(windows, key=_window_sort_key)
     submissions = session.scalars(
         select(PickSubmission).where(PickSubmission.window_id.in_([window.id for window in windows] or [""]))
     ).all()
@@ -763,6 +854,7 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
     early_window = next((window for window in windows if window.bet_type == "early"), None)
     early_result_state = _latest_early_payload(session, pool_id)
     closed_pick_tables, matchup_lookup = _build_pick_tables(windows, memberships, users, submissions, results, leaderboard)
+    closed_pick_tables = sorted(closed_pick_tables, key=_matchup_row_sort_key)
     leader_row = leaderboard[0] if leaderboard else None
     leader_message = _latest_leader_message(session, pool_id)
     return {
@@ -1063,6 +1155,8 @@ def pool_detail(pool_id: str, request: Request, session: Session = Depends(get_s
     context["active_tab"] = active_tab if active_tab in VALID_POOL_TABS else "overview"
     context["resume_status"] = request.query_params.get("resume_status")
     context["resume_message"] = request.query_params.get("resume_message")
+    context["flash_status"] = request.query_params.get("flash_status")
+    context["flash_message"] = request.query_params.get("flash_message")
     return templates.TemplateResponse(request, "pool.html", context)
 
 
@@ -1077,13 +1171,28 @@ def player_detail(pool_id: str, member_id: str, request: Request, session: Sessi
     target_user = context["users"][target_membership.user_id]
     leaderboard_row = next((row for row in context["leaderboard"] if row.member_id == member_id), None)
     visible_picks = []
+    missing_picks = []
     for window in context["windows"]:
-        if not window.is_revealed:
-            continue
         submission = context["submissions_by_window_member"].get((window.id, member_id))
         if window.bet_type == "early":
+            if not submission and not window.is_locked:
+                missing_picks.append({"window": window, "label": window.name, "type": "early"})
+            if not window.is_revealed:
+                continue
             if submission:
                 visible_picks.append({"window": window, "type": "early", "payload": submission.payload})
+            continue
+        unresolved_series = [series for series in getattr(window, "render_series", []) if not series["resolved"]]
+        if not submission and not window.is_locked:
+            for series in getattr(window, "render_series", []):
+                if series["resolved"]:
+                    missing_picks.append({"window": window, "label": f"{series['team_details'][0]['name']} vs {series['team_details'][1]['name']}", "type": window.bet_type})
+        elif submission and not window.is_locked:
+            series_payload = submission.payload.get("series", {})
+            for series in getattr(window, "render_series", []):
+                if series["resolved"] and not series_payload.get(series["series_key"]):
+                    missing_picks.append({"window": window, "label": f"{series['team_details'][0]['name']} vs {series['team_details'][1]['name']}", "type": window.bet_type})
+        if not window.is_revealed:
             continue
         for series in getattr(window, "render_series", []):
             pick = submission.payload.get("series", {}).get(series["series_key"], {}) if submission else {}
@@ -1097,6 +1206,7 @@ def player_detail(pool_id: str, member_id: str, request: Request, session: Sessi
             "selected_user": target_user,
             "selected_leaderboard_row": leaderboard_row,
             "visible_picks": visible_picks,
+            "missing_picks": missing_picks,
         },
     )
 
@@ -1271,11 +1381,17 @@ async def submit_picks(
 ) -> Response:
     membership = require_membership(request, session, pool_id)
     window = session.get(BettingWindow, window_id)
-    if window.pool_id != pool_id:
+    if not window or window.pool_id != pool_id:
         raise HTTPException(status_code=404, detail="Window not found.")
     if window.is_locked:
-        raise HTTPException(status_code=400, detail="Betting window is locked.")
-    payload = await parse_submission_payload(request, window)
+        return RedirectResponse(
+            url=redirect_with_message(pool_id, "overview", "error", "The bet is closed, you can bag to Gil"),
+            status_code=303,
+        )
+    try:
+        payload = await parse_submission_payload(request, window)
+    except HTTPException as exc:
+        return RedirectResponse(url=redirect_with_message(pool_id, "overview", "error", str(exc.detail)), status_code=303)
     existing = session.scalar(select(PickSubmission).where(PickSubmission.window_id == window_id, PickSubmission.member_id == membership.id))
     if existing:
         existing.payload = payload
@@ -1284,7 +1400,7 @@ async def submit_picks(
         session.add(PickSubmission(window_id=window_id, member_id=membership.id, payload=payload))
     session.add(EventLog(pool_id=pool_id, actor_member_id=membership.id, event_type="picks_submitted", payload={"window_id": window_id}))
     session.commit()
-    return RedirectResponse(url=redirect_with_tab(pool_id, "overview"), status_code=303)
+    return RedirectResponse(url=redirect_with_message(pool_id, "overview", "success", "Your picks were saved."), status_code=303)
 
 
 @app.post("/pools/{pool_id}/windows/{window_id}/lock")
@@ -1344,6 +1460,95 @@ def delete_window(pool_id: str, window_id: str, request: Request, session: Sessi
     return RedirectResponse(url=redirect_with_tab(pool_id, "commissioner"), status_code=303)
 
 
+@app.post("/pools/{pool_id}/members/{member_id}/rename")
+def rename_member(
+    pool_id: str,
+    member_id: str,
+    request: Request,
+    nickname: str = Form(...),
+    session: Session = Depends(get_session),
+) -> Response:
+    commissioner = require_commissioner(request, session, pool_id)
+    membership = session.get(Membership, member_id)
+    if not membership or membership.pool_id != pool_id:
+        raise HTTPException(status_code=404, detail="Player not found.")
+    user = session.get(User, membership.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Player not found.")
+    new_name = nickname.strip()
+    if not new_name:
+        return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "error", "Player name cannot be empty."), status_code=303)
+    user.nickname = new_name
+    session.add(
+        EventLog(
+            pool_id=pool_id,
+            actor_member_id=commissioner.id,
+            event_type="member_renamed",
+            payload={"member_id": member_id, "nickname": new_name},
+        )
+    )
+    session.commit()
+    return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "success", f"Updated {new_name}."), status_code=303)
+
+
+@app.post("/pools/{pool_id}/members/{member_id}/delete")
+def delete_member(pool_id: str, member_id: str, request: Request, session: Session = Depends(get_session)) -> Response:
+    commissioner = require_commissioner(request, session, pool_id)
+    membership = session.get(Membership, member_id)
+    if not membership or membership.pool_id != pool_id:
+        raise HTTPException(status_code=404, detail="Player not found.")
+    user = session.get(User, membership.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Player not found.")
+    if user.is_monkey:
+        return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "error", "The Monkey cannot be removed."), status_code=303)
+    if membership.role == "commissioner":
+        return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "error", "Delete the entire pool instead of deleting the commissioner."), status_code=303)
+    nickname = user.nickname
+    _delete_membership(session, membership)
+    session.add(
+        EventLog(
+            pool_id=pool_id,
+            actor_member_id=commissioner.id,
+            event_type="member_deleted",
+            payload={"nickname": nickname},
+        )
+    )
+    session.commit()
+    return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "success", f"Removed {nickname} from the tournament."), status_code=303)
+
+
+@app.post("/pools/{pool_id}/delete")
+def delete_pool(pool_id: str, request: Request, session: Session = Depends(get_session)) -> Response:
+    commissioner = require_commissioner(request, session, pool_id)
+    pool = session.get(Pool, pool_id)
+    if not pool:
+        raise HTTPException(status_code=404, detail="Pool not found.")
+    memberships = session.scalars(select(Membership).where(Membership.pool_id == pool_id)).all()
+    session.query(EventLog).filter(EventLog.pool_id == pool_id).delete()
+    session.query(ResultSnapshot).filter(ResultSnapshot.pool_id == pool_id).delete()
+    session.query(PickSubmission).filter(PickSubmission.window_id.in_(select(BettingWindow.id).where(BettingWindow.pool_id == pool_id))).delete(
+        synchronize_session=False
+    )
+    session.query(PaymentLedgerEntry).filter(PaymentLedgerEntry.pool_id == pool_id).delete()
+    session.query(InviteLink).filter(InviteLink.pool_id == pool_id).delete()
+    session.query(BettingWindow).filter(BettingWindow.pool_id == pool_id).delete()
+    for membership in memberships:
+        session.delete(membership)
+    session.flush()
+    user_ids = [membership.user_id for membership in memberships]
+    for user_id in user_ids:
+        if not session.scalar(select(Membership).where(Membership.user_id == user_id)):
+            user = session.get(User, user_id)
+            if user:
+                session.delete(user)
+    session.delete(pool)
+    session.commit()
+    response = RedirectResponse(url="/", status_code=303)
+    response.delete_cookie(settings.session_cookie_name)
+    return response
+
+
 @app.post("/pools/{pool_id}/results")
 async def post_result(
     pool_id: str,
@@ -1351,23 +1556,57 @@ async def post_result(
     session: Session = Depends(get_session),
 ) -> Response:
     commissioner = require_commissioner(request, session, pool_id)
-    scope_type, scope_key, payload, source, override_reason = await parse_result_payload(request)
-    result = ResultSnapshot(
-        pool_id=pool_id,
-        scope_type=scope_type,
-        scope_key=scope_key,
-        payload=payload,
-        source=source,
-        is_override=bool(override_reason),
-        override_reason=override_reason or None,
-        created_by_member_id=commissioner.id,
-    )
-    session.add(result)
-    session.add(EventLog(pool_id=pool_id, actor_member_id=commissioner.id, event_type="result_posted", payload={"scope_type": scope_type, "scope_key": scope_key}))
+    form = await request.form()
+    if form.get("scope_key"):
+        try:
+            scope_type, scope_key, payload, source, override_reason = await parse_result_payload(request)
+        except HTTPException as exc:
+            return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "error", str(exc.detail)), status_code=303)
+        session.add(
+            ResultSnapshot(
+                pool_id=pool_id,
+                scope_type=scope_type,
+                scope_key=scope_key,
+                payload=payload,
+                source=source,
+                is_override=bool(override_reason),
+                override_reason=override_reason or None,
+                created_by_member_id=commissioner.id,
+            )
+        )
+        session.add(EventLog(pool_id=pool_id, actor_member_id=commissioner.id, event_type="result_posted", payload={"scope_type": scope_type, "scope_key": scope_key}))
+        session.flush()
+        _materialize_resolved_windows(session, pool_id)
+        session.commit()
+        return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "success", "Saved 1 marked result."), status_code=303)
+    context = load_pool_context(session, pool_id)
+    try:
+        result_payloads = await parse_bulk_result_payloads(request, context["windows"])
+    except HTTPException as exc:
+        return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "error", str(exc.detail)), status_code=303)
+    if not result_payloads:
+        return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "error", "Mark at least one result before saving."), status_code=303)
+    for scope_key, payload, source, override_reason in result_payloads:
+        session.add(
+            ResultSnapshot(
+                pool_id=pool_id,
+                scope_type="series",
+                scope_key=scope_key,
+                payload=payload,
+                source=source,
+                is_override=bool(override_reason),
+                override_reason=override_reason or None,
+                created_by_member_id=commissioner.id,
+            )
+        )
+        session.add(EventLog(pool_id=pool_id, actor_member_id=commissioner.id, event_type="result_posted", payload={"scope_type": "series", "scope_key": scope_key}))
     session.flush()
     _materialize_resolved_windows(session, pool_id)
     session.commit()
-    return RedirectResponse(url=redirect_with_tab(pool_id, "commissioner"), status_code=303)
+    return RedirectResponse(
+        url=redirect_with_message(pool_id, "commissioner", "success", f"Saved {len(result_payloads)} marked result(s)."),
+        status_code=303,
+    )
 
 
 @app.post("/pools/{pool_id}/results/early-field")

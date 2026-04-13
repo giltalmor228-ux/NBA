@@ -70,6 +70,22 @@
   </section>
 
   <section class="card-surface">
+    <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Missing picks</p>
+    <h3 class="mt-2 text-2xl font-bold text-slate-900">Boards still waiting on this player</h3>
+    <div class="mt-5 grid gap-3">
+      {% for item in missing_picks %}
+        <article class="series-shell">
+          <p class="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">{{ item.window.round_key.replace("_", " ") }}</p>
+          <p class="mt-2 text-lg font-bold text-slate-900">{{ item.label }}</p>
+          <p class="mt-2 text-sm text-slate-600">This pick is still open and has not been submitted yet.</p>
+        </article>
+      {% else %}
+        <p class="text-slate-500">This player has no missing open picks right now.</p>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="card-surface">
     <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Visible picks</p>
     <h3 class="mt-2 text-2xl font-bold text-slate-900">Locked boards only</h3>
     <div class="mt-5 grid gap-4">

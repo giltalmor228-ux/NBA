@@ -3,6 +3,11 @@
 {% set current_user = current_membership and users[current_membership.user_id] %}
 {% set is_commissioner = current_membership and current_membership.role == "commissioner" %}
 <div class="space-y-8">
+  {% if flash_message %}
+    <section class="rounded-[1.75rem] px-5 py-4 text-sm leading-6 {% if flash_status == 'success' %}bg-emerald-50 text-emerald-800{% else %}bg-orange-50 text-orange-800{% endif %}">
+      {{ flash_message }}
+    </section>
+  {% endif %}
   {% if resume_message %}
     <section class="rounded-[1.75rem] px-5 py-4 text-sm leading-6 {% if resume_status == 'success' %}bg-emerald-50 text-emerald-800{% else %}bg-orange-50 text-orange-800{% endif %}">
       {{ resume_message }}
@@ -82,10 +87,10 @@
             <span class="text-sm text-slate-500">Click any player to open their stats and locked picks.</span>
           </div>
           {% if leader_message %}
-            <div class="mt-5 rounded-[1.75rem] bg-[#fff4c8] px-5 py-4 text-slate-900 shadow-sm">
+            <div class="mt-5 rounded-[1.75rem] bg-[#fff4c8] px-6 py-5 text-slate-900 shadow-sm">
               <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">First-place spotlight</p>
-              <p class="mt-2 text-lg font-bold">{{ leader_message.display_name }}</p>
-              <p class="mt-2 text-sm leading-6">{{ leader_message.message }}</p>
+              <p class="mt-2 text-xl font-black">{{ leader_message.display_name }}</p>
+              <p class="mt-3 text-base font-semibold leading-7">{{ leader_message.message }}</p>
             </div>
           {% endif %}
           {% if leader_can_post %}
@@ -149,6 +154,9 @@
 
               {% if window.bet_type == "early" %}
                 <form action="/pools/{{ pool.id }}/windows/{{ window.id }}/submit" method="post" class="mt-6 grid gap-5" data-finals-scope="player-{{ window.id }}">
+                  {% if current_state.get("champion") %}
+                    <div class="rounded-[1.25rem] bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">You already bet this board. You can still update it until the lock time.</div>
+                  {% endif %}
                   <div class="grid gap-4 md:grid-cols-2">
                     <div class="prediction-card">
                       <p class="prediction-title">East path</p>
@@ -240,6 +248,11 @@
                           This matchup unlocks automatically after the previous game or series determines both teams.
                         </div>
                       {% else %}
+                        {% if pick_state.get("winner") %}
+                          <div class="rounded-[1.25rem] bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+                            You already bet this game.
+                          </div>
+                        {% endif %}
                         <div class="grid gap-4 xl:grid-cols-2">
                           <div class="prediction-card">
                             <p class="prediction-title">{{ "Game winner" if window.bet_type == "play_in" else "Series winner" }}</p>
@@ -615,17 +628,19 @@
           <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Game and series results</p>
           <h3 class="mt-2 text-2xl font-bold text-slate-900">Record official outcomes</h3>
         </div>
-        {% for window in windows %}
-          {% if window.bet_type in ["series", "play_in"] %}
-            {% for series in window.render_series %}
-              <form action="/pools/{{ pool.id }}/results" method="post" class="series-shell">
-                <input type="hidden" name="scope_type" value="series" />
-                <input type="hidden" name="scope_key" value="{{ series.series_key }}" />
-                <input type="hidden" name="bet_type" value="{{ window.bet_type }}" />
-                <div class="series-header">
-                  {% for team in series.team_details %}
-                    <div class="team-pill">
-                      <img src="{{ team.logo }}" alt="{{ team.name }} logo" class="team-logo" />
+        <form action="/pools/{{ pool.id }}/results" method="post" class="space-y-4">
+          {% for window in windows %}
+            {% if window.bet_type in ["series", "play_in"] %}
+              {% for series in window.render_series %}
+                {% set saved_row = matchup_lookup.get(series.series_key) %}
+                {% set saved_payload = saved_row.result_payload if saved_row else None %}
+                <section class="series-shell">
+                  <input type="hidden" name="bet_type_{{ series.series_key }}" value="{{ window.bet_type }}" />
+                  <input type="hidden" name="scope_key_{{ series.series_key }}" value="{{ series.series_key }}" />
+                  <div class="series-header">
+                    {% for team in series.team_details %}
+                      <div class="team-pill">
+                        <img src="{{ team.logo }}" alt="{{ team.name }} logo" class="team-logo" />
                       <div>
                         <p class="text-xs uppercase tracking-[0.2em] text-slate-500">{{ team.abbr }}</p>
                         <p class="text-base font-bold text-slate-900">{{ team.name }}</p>
@@ -633,48 +648,87 @@
                     </div>
                   {% endfor %}
                 </div>
-                {% if not series.resolved %}
-                  <div class="rounded-[1.25rem] bg-[#fff8ef] px-4 py-3 text-sm leading-6 text-slate-500">
-                    This result form opens after the bracket resolves both teams for the matchup.
+                  <div class="mt-4 flex flex-wrap items-center gap-3 text-sm">
+                    {% if saved_payload %}
+                      <span class="rounded-full bg-emerald-50 px-4 py-2 font-semibold text-emerald-800">Saved result: {{ saved_row.result_summary }}</span>
+                    {% else %}
+                      <span class="rounded-full bg-slate-100 px-4 py-2 font-semibold text-slate-600">No score saved yet</span>
+                    {% endif %}
                   </div>
-                {% else %}
-                  <div class="grid gap-4 lg:grid-cols-2">
-                    <div class="prediction-card">
-                      <p class="prediction-title">{{ "Winner" if window.bet_type == "play_in" else "Series winner" }}</p>
-                      <div class="choice-grid">
-                        {% for team in series.teams %}
-                          <label class="choice-card">
-                            <input type="radio" name="result_winner" value="{{ team }}" required />
-                            <span>{{ team_name(team) }}</span>
-                          </label>
-                        {% endfor %}
-                      </div>
+                  {% if not series.resolved %}
+                    <div class="rounded-[1.25rem] bg-[#fff8ef] px-4 py-3 text-sm leading-6 text-slate-500">
+                      This result form opens after the bracket resolves both teams for the matchup.
                     </div>
-                    {% if window.bet_type != "play_in" %}
+                  {% else %}
+                    <div class="grid gap-4 lg:grid-cols-2">
                       <div class="prediction-card">
-                        <p class="prediction-title">Total games</p>
-                        <div class="choice-grid choice-grid--compact">
-                          {% for games in [4, 5, 6, 7] %}
+                        <p class="prediction-title">{{ "Winner" if window.bet_type == "play_in" else "Series winner" }}</p>
+                        <div class="choice-grid">
+                          {% for team in series.teams %}
                             <label class="choice-card">
-                              <input type="radio" name="result_games_count" value="{{ games }}" {% if games == 5 %}checked{% endif %} required />
-                              <span>{{ games }} games</span>
+                              <input type="radio" name="result_winner_{{ series.series_key }}" value="{{ team }}" {% if saved_payload and saved_payload.winner == team %}checked{% endif %} />
+                              <span>{{ team_name(team) }}</span>
                             </label>
                           {% endfor %}
                         </div>
                       </div>
-                    {% endif %}
-                  </div>
-                  <div class="grid gap-4 lg:grid-cols-3 mt-4">
-                    <input name="display_score" class="friendly-input" placeholder="Official score/result e.g. 4-2 or 112-108" />
-                    <input name="source" class="friendly-input" value="manual" />
-                    <input name="override_reason" class="friendly-input" placeholder="Optional override reason" />
-                  </div>
-                  <button class="primary-action mt-4">Save result</button>
+                      {% if window.bet_type != "play_in" %}
+                        <div class="prediction-card">
+                          <p class="prediction-title">Total games</p>
+                          <div class="choice-grid choice-grid--compact">
+                            {% for games in [4, 5, 6, 7] %}
+                              <label class="choice-card">
+                                <input type="radio" name="result_games_count_{{ series.series_key }}" value="{{ games }}" {% if saved_payload and saved_payload.exact_result == '4-' ~ (games - 4) %}checked{% endif %} />
+                                <span>{{ games }} games</span>
+                              </label>
+                            {% endfor %}
+                          </div>
+                        </div>
+                      {% endif %}
+                    </div>
+                    <div class="grid gap-4 lg:grid-cols-3 mt-4">
+                      <input name="display_score_{{ series.series_key }}" class="friendly-input" placeholder="Official score/result e.g. 4-2 or 112-108" value="{{ saved_payload.display_score if saved_payload and saved_payload.display_score else '' }}" />
+                      <input name="source_{{ series.series_key }}" class="friendly-input" value="manual" />
+                      <input name="override_reason_{{ series.series_key }}" class="friendly-input" placeholder="Optional override reason" value="" />
+                    </div>
+                    <button class="primary-action mt-4">Save results</button>
+                  {% endif %}
+                </section>
+              {% endfor %}
+            {% endif %}
+          {% endfor %}
+        </form>
+      </section>
+
+      <section class="card-surface space-y-5">
+        <div>
+          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Players</p>
+          <h3 class="mt-2 text-2xl font-bold text-slate-900">Manage tournament members</h3>
+        </div>
+        <div class="grid gap-4">
+          {% for membership in memberships %}
+            {% set member_user = users[membership.user_id] %}
+            <article class="leaderboard-row">
+              <div>
+                <p class="text-lg font-bold text-slate-900">{{ member_user.nickname }}</p>
+                <p class="text-sm text-slate-500">{{ membership.role.title() }}{% if member_user.is_monkey %} • Bot{% endif %}</p>
+              </div>
+              <div class="flex flex-wrap gap-3">
+                {% if not member_user.is_monkey %}
+                  <form action="/pools/{{ pool.id }}/members/{{ membership.id }}/rename" method="post" class="flex flex-wrap gap-2">
+                    <input name="nickname" class="friendly-input !w-auto !min-w-[180px]" value="{{ member_user.nickname }}" required />
+                    <button class="secondary-action">Rename</button>
+                  </form>
                 {% endif %}
-              </form>
-            {% endfor %}
-          {% endif %}
-        {% endfor %}
+                {% if membership.role != "commissioner" and not member_user.is_monkey %}
+                  <form action="/pools/{{ pool.id }}/members/{{ membership.id }}/delete" method="post" onsubmit="return confirm('Remove this player from the tournament?');">
+                    <button class="secondary-action">Delete player</button>
+                  </form>
+                {% endif %}
+              </div>
+            </article>
+          {% endfor %}
+        </div>
       </section>
 
       <section class="card-surface space-y-5">
@@ -737,6 +791,17 @@
             <div class="rounded-[1.5rem] bg-[#fff8ef] p-5 text-sm leading-6 text-slate-500">No results posted yet.</div>
           {% endfor %}
         </div>
+      </section>
+
+      <section class="card-surface space-y-4">
+        <div>
+          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Danger zone</p>
+          <h3 class="mt-2 text-2xl font-bold text-slate-900">Delete pool</h3>
+          <p class="mt-2 text-sm leading-6 text-slate-600">This removes the pool, all players, picks, results, and audit history.</p>
+        </div>
+        <form action="/pools/{{ pool.id }}/delete" method="post" onsubmit="return confirm('Delete this entire pool permanently?');">
+          <button class="secondary-action">Delete pool</button>
+        </form>
       </section>
     </section>
   {% endif %}

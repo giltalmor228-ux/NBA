@@ -1030,3 +1030,167 @@ def test_commissioner_can_delete_a_window() -> None:
     updated_page = commissioner_client.get(f"{pool_url}?tab=commissioner")
     assert updated_page.status_code == 200
     assert "Round 1: Boston Celtics vs Orlando Magic" not in updated_page.text
+
+
+def test_locked_submit_redirects_back_with_message() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Locked Window Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    player_client.post(f"/invite/{invite_token}", data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"}, follow_redirects=False)
+
+    window = find_window_by_name(pool_id, "Early Picks")
+    lock_window_and_assert_revealed(commissioner_client, pool_url, window)
+
+    response = player_client.post(
+        f"{pool_url}/windows/{window.id}/submit",
+        data={
+            "conference_finalists_east": "BOS",
+            "conference_finalists_west": "OKC",
+            "nba_finalists_east": "BOS",
+            "nba_finalists_west": "OKC",
+            "champion": "BOS",
+            "finals_mvp": "Jayson Tatum",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert "The bet is closed, you can bag to Gil" in response.text
+    assert "Locked Window Pool" in response.text
+
+
+def test_bulk_result_save_persists_multiple_marked_games_and_saved_badges() -> None:
+    commissioner_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Bulk Results Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    for round_key, bet_type, team_one, team_two in [("play_in", "play_in", "ATL", "ORL"), ("round_1", "series", "BOS", "NYK")]:
+        response = commissioner_client.post(
+            f"{pool_url}/windows",
+            data={
+                "name": "",
+                "round_key": round_key,
+                "bet_type": bet_type,
+                "opens_at": "2026-04-14T12:00",
+                "locks_at": "2026-04-18T19:00",
+                "team_one": team_one,
+                "team_two": team_two,
+                "series_key": "",
+                "next_tab": "commissioner",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+    save_response = commissioner_client.post(
+        f"{pool_url}/results",
+        data={
+            "result_winner_play_in-ATL-ORL": "ATL",
+            "display_score_play_in-ATL-ORL": "111-104",
+            "result_winner_round_1-BOS-NYK": "BOS",
+            "result_games_count_round_1-BOS-NYK": "6",
+            "display_score_round_1-BOS-NYK": "Boston won 4-2",
+        },
+        follow_redirects=True,
+    )
+    assert save_response.status_code == 200
+    assert "Saved 2 marked result(s)." in save_response.text
+    assert_result_exists(pool_id, "play_in-ATL-ORL")
+    assert_result_exists(pool_id, "round_1-BOS-NYK")
+    assert "111-104" in save_response.text
+    assert "Saved result: Boston won 4-2" in save_response.text
+
+
+def test_commissioner_can_manage_members_and_delete_pool() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Manage Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    player_client.post(f"/invite/{invite_token}", data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"}, follow_redirects=False)
+
+    with SessionLocal() as session:
+        avi_membership = session.scalar(
+            select(Membership).join(User, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.nickname == "Avi")
+        )
+        assert avi_membership is not None
+        avi_member_id = avi_membership.id
+
+    rename_response = commissioner_client.post(
+        f"/pools/{pool_id}/members/{avi_member_id}/rename",
+        data={"nickname": "Avi Prime"},
+        follow_redirects=True,
+    )
+    assert rename_response.status_code == 200
+    assert "Updated Avi Prime." in rename_response.text
+
+    delete_response = commissioner_client.post(
+        f"/pools/{pool_id}/members/{avi_member_id}/delete",
+        follow_redirects=True,
+    )
+    assert delete_response.status_code == 200
+    assert "Removed Avi Prime from the tournament." in delete_response.text
+
+    pool_delete = commissioner_client.post(f"/pools/{pool_id}/delete", follow_redirects=False)
+    assert pool_delete.status_code == 303
+    homepage = commissioner_client.get(pool_delete.headers["location"])
+    assert homepage.status_code == 200
+    assert "Manage Pool" not in homepage.text
+
+
+def test_overview_ordering_saved_banners_and_player_missing_picks() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Ordering Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    player_client.post(f"/invite/{invite_token}", data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"}, follow_redirects=False)
+
+    setup_windows = [
+        ("play_in", "play_in", "ATL", "ORL"),
+        ("round_1", "series", "BOS", "NYK"),
+        ("conference_finals", "series", "OKC", "MIN"),
+    ]
+    for round_key, bet_type, team_one, team_two in setup_windows:
+        commissioner_client.post(
+            f"{pool_url}/windows",
+            data={
+                "name": "",
+                "round_key": round_key,
+                "bet_type": bet_type,
+                "opens_at": "2026-04-14T12:00",
+                "locks_at": "2026-04-18T19:00",
+                "team_one": team_one,
+                "team_two": team_two,
+                "series_key": "",
+                "next_tab": "commissioner",
+            },
+            follow_redirects=False,
+        )
+
+    play_in_window = find_window_by_series_key(pool_id, "play_in-ATL-ORL")
+    player_client.post(f"{pool_url}/windows/{play_in_window.id}/submit", data={"winner_play_in-ATL-ORL": "ATL"}, follow_redirects=False)
+
+    overview = player_client.get(f"{pool_url}?tab=overview")
+    assert overview.status_code == 200
+    early_idx = overview.text.index("Early Picks")
+    play_in_idx = overview.text.index("Play-In: Atlanta Hawks vs Orlando Magic")
+    round_one_idx = overview.text.index("Round 1: Boston Celtics vs New York Knicks")
+    conference_idx = overview.text.index("Conference Finals: Oklahoma City Thunder vs Minnesota Timberwolves")
+    assert early_idx < play_in_idx < round_one_idx < conference_idx
+    assert "You already bet this game." in overview.text
+
+    with SessionLocal() as session:
+        player_membership = session.scalar(
+            select(Membership).join(User, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.nickname == "Avi")
+        )
+        assert player_membership is not None
+        player_member_id = player_membership.id
+    player_page = player_client.get(f"/pools/{pool_id}/players/{player_member_id}")
+    assert player_page.status_code == 200
+    assert "Boards still waiting on this player" in player_page.text
+    assert "Boston Celtics vs New York Knicks" in player_page.text
