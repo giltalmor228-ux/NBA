@@ -270,6 +270,10 @@ def test_team_and_player_dropdowns_cover_catalog() -> None:
     commissioner_page = commissioner_client.get(f"{pool_url}?tab=commissioner")
     assert commissioner_page.status_code == 200
     assert 'type="datetime-local"' in commissioner_page.text
+    finals_pool = players_for_teams(["BOS", "NYK"])
+    assert "Nikola Vucevic" in finals_pool
+    assert "Jordan Clarkson" in finals_pool
+    assert "Hugo Gonzalez" in finals_pool
 
 
 def test_create_window_generates_name_from_round_and_teams() -> None:
@@ -456,6 +460,8 @@ def test_matchup_detail_and_closed_bets_tables_show_results_and_points() -> None
     assert create_window_response.status_code == 303
 
     window = find_window_by_series_key(pool_id, "round_1-BOS-ORL")
+    hidden_matchup_page = commissioner_client.get(f"/pools/{pool_id}/matchups/round_1-BOS-ORL")
+    assert hidden_matchup_page.status_code == 403
     submit_series_pick(commissioner_client, pool_url, window, 0, "BOS", 6)
     submit_series_pick(player_client, pool_url, window, 3, "BOS", 6)
     lock_window_and_assert_revealed(commissioner_client, pool_url, window)
@@ -516,6 +522,60 @@ def test_matchup_detail_and_closed_bets_tables_show_results_and_points() -> None
     assert "Score breakdown" in player_page.text
     assert "Board" in player_page.text
     assert "Breakdown" in player_page.text
+
+
+def test_first_place_player_can_post_highlighted_message() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Leader Message Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    join_response = player_client.post(
+        f"/invite/{invite_token}",
+        data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"},
+        follow_redirects=False,
+    )
+    assert join_response.status_code == 303
+
+    early_window = find_window_by_name(pool_id, "Early Picks")
+    submit_early_picks(commissioner_client, pool_url, early_window.id, ["BOS", "NYK"], ["OKC", "DEN"], 0)
+    submit_early_picks(player_client, pool_url, early_window.id, ["ORL", "PHI"], ["PHX", "MIN"], 1)
+    lock_window_and_assert_revealed(commissioner_client, pool_url, early_window)
+    for field_name, value in [
+        ("conference_finalists_east", "BOS"),
+        ("conference_finalists_west", "OKC"),
+        ("nba_finalists_east", "BOS"),
+        ("nba_finalists_west", "OKC"),
+        ("champion", "BOS"),
+        ("finals_mvp", "Jayson Tatum"),
+    ]:
+        response = commissioner_client.post(
+            f"{pool_url}/results/early-field",
+            data={"field_name": field_name, "field_value": value},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+    page = commissioner_client.get(f"{pool_url}?tab=overview")
+    assert "Save highlighted message" in page.text
+
+    message_response = commissioner_client.post(
+        f"/pools/{pool_id}/leader-message",
+        data={"message": "Still on top. Catch me if you can."},
+        follow_redirects=False,
+    )
+    assert message_response.status_code == 303
+
+    updated_page = commissioner_client.get(f"{pool_url}?tab=overview")
+    assert "Still on top. Catch me if you can." in updated_page.text
+
+    denied_response = player_client.post(
+        f"/pools/{pool_id}/leader-message",
+        data={"message": "I should not be allowed to post this."},
+        follow_redirects=False,
+    )
+    assert denied_response.status_code == 403
 
 
 def test_full_five_player_league_flow() -> None:

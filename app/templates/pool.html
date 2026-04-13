@@ -81,6 +81,21 @@
             </div>
             <span class="text-sm text-slate-500">Click any player to open their stats and locked picks.</span>
           </div>
+          {% if leader_message %}
+            <div class="mt-5 rounded-[1.75rem] bg-[#fff4c8] px-5 py-4 text-slate-900 shadow-sm">
+              <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">First-place spotlight</p>
+              <p class="mt-2 text-lg font-bold">{{ leader_message.display_name }}</p>
+              <p class="mt-2 text-sm leading-6">{{ leader_message.message }}</p>
+            </div>
+          {% endif %}
+          {% if leader_can_post %}
+            <form action="/pools/{{ pool.id }}/leader-message" method="post" class="mt-5 rounded-[1.75rem] bg-[#fff8ef] p-5">
+              <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Leader message</p>
+              <p class="mt-2 text-sm leading-6 text-slate-600">You are currently in first place, so you can pin a highlighted message for everyone.</p>
+              <textarea name="message" class="friendly-input mt-4 min-h-[110px]" placeholder="Write a short message for the pool..." maxlength="280" required>{{ leader_message.message if leader_message and leader_message.member_id == current_membership.id else "" }}</textarea>
+              <button class="primary-action mt-4">Save highlighted message</button>
+            </form>
+          {% endif %}
           <div class="mt-5 grid gap-3">
             {% for row in leaderboard_rows %}
               <article class="leaderboard-row {% if row.is_monkey %}leaderboard-row--monkey{% endif %}">
@@ -216,7 +231,7 @@
                       <div class="mt-4 flex flex-wrap items-center gap-3 text-sm text-slate-500">
                         {% set matchup_row = matchup_lookup.get(series.series_key) %}
                         <span>Official result: {{ matchup_row.result_summary if matchup_row and matchup_row.result_payload else "Pending" }}</span>
-                        {% if window.is_revealed or is_commissioner %}
+                        {% if window.is_revealed %}
                           <a href="/pools/{{ pool.id }}/matchups/{{ series.series_key }}" class="pill-link pill-link--secondary">View pick table</a>
                         {% endif %}
                       </div>

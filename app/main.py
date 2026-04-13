@@ -269,6 +269,17 @@ def _latest_early_payload(session: Session, pool_id: str) -> dict[str, Any]:
     return payload
 
 
+def _latest_leader_message(session: Session, pool_id: str) -> dict[str, Any] | None:
+    events = session.scalars(
+        select(EventLog)
+        .where(EventLog.pool_id == pool_id, EventLog.event_type == "leader_message_updated")
+        .order_by(EventLog.created_at)
+    ).all()
+    if not events:
+        return None
+    return events[-1].payload
+
+
 def _finals_mvp_options_from_payload(payload: dict[str, Any]) -> list[str]:
     teams = [payload.get("nba_finalists", {}).get("East"), payload.get("nba_finalists", {}).get("West")]
     options = players_for_teams([team for team in teams if team])
@@ -752,6 +763,8 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
     early_window = next((window for window in windows if window.bet_type == "early"), None)
     early_result_state = _latest_early_payload(session, pool_id)
     closed_pick_tables, matchup_lookup = _build_pick_tables(windows, memberships, users, submissions, results, leaderboard)
+    leader_row = leaderboard[0] if leaderboard else None
+    leader_message = _latest_leader_message(session, pool_id)
     return {
         "pool": pool,
         "memberships": memberships,
@@ -774,6 +787,8 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
         "play_in_explanation": PLAY_IN_EXPLANATION,
         "closed_pick_tables": closed_pick_tables,
         "matchup_lookup": matchup_lookup,
+        "leader_row": leader_row,
+        "leader_message": leader_message,
         "bracket_sections": _build_bracket_sections(windows, results),
         "tie_break_rules": [
             "Most exact series results predicted correctly",
@@ -1043,6 +1058,7 @@ def pool_detail(pool_id: str, request: Request, session: Session = Depends(get_s
     context = load_pool_context(session, pool_id)
     membership = current_membership(request, session)
     context["current_membership"] = membership if membership and membership.pool_id == pool_id else None
+    context["leader_can_post"] = bool(context["current_membership"] and context["leader_row"] and context["current_membership"].id == context["leader_row"].member_id)
     active_tab = request.query_params.get("tab", "overview")
     context["active_tab"] = active_tab if active_tab in VALID_POOL_TABS else "overview"
     context["resume_status"] = request.query_params.get("resume_status")
@@ -1090,11 +1106,10 @@ def matchup_detail(pool_id: str, series_key: str, request: Request, session: Ses
     context = load_pool_context(session, pool_id)
     membership = current_membership(request, session)
     context["current_membership"] = membership if membership and membership.pool_id == pool_id else None
-    is_commissioner = bool(context["current_membership"] and context["current_membership"].role == "commissioner")
     matchup = context["matchup_lookup"].get(series_key)
     if not matchup:
         raise HTTPException(status_code=404, detail="Matchup not found.")
-    if not matchup["window"].is_revealed and not is_commissioner:
+    if not matchup["window"].is_revealed:
         raise HTTPException(status_code=403, detail="This board is still hidden until the window is revealed.")
     return templates.TemplateResponse(
         request,
@@ -1104,6 +1119,36 @@ def matchup_detail(pool_id: str, series_key: str, request: Request, session: Ses
             "matchup": matchup,
         },
     )
+
+
+@app.post("/pools/{pool_id}/leader-message")
+async def save_leader_message(pool_id: str, request: Request, session: Session = Depends(get_session)) -> Response:
+    membership = require_membership(request, session, pool_id)
+    context = load_pool_context(session, pool_id)
+    leader_row = context["leader_row"]
+    if not leader_row or leader_row.member_id != membership.id:
+        raise HTTPException(status_code=403, detail="Only the current first-place player can post the highlighted message.")
+    form = await request.form()
+    message = str(form.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Write a message before saving.")
+    if len(message) > 280:
+        raise HTTPException(status_code=400, detail="Highlighted messages must be 280 characters or fewer.")
+    user = session.get(User, membership.user_id)
+    session.add(
+        EventLog(
+            pool_id=pool_id,
+            actor_member_id=membership.id,
+            event_type="leader_message_updated",
+            payload={
+                "message": message,
+                "member_id": membership.id,
+                "display_name": user.nickname if user else "Leader",
+            },
+        )
+    )
+    session.commit()
+    return RedirectResponse(url=redirect_with_tab(pool_id, "overview"), status_code=303)
 
 
 @app.post("/pools/{pool_id}/resume")
