@@ -1,0 +1,9 @@
+.venv
+__pycache__
+.pytest_cache
+*.pyc
+*.pyo
+*.pyd
+*.db
+test_nba_pool.db
+postgres_data

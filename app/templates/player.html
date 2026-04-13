@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="space-y-6">
+  <a href="/pools/{{ pool.id }}?tab=overview" class="pill-link pill-link--secondary">Back to pool</a>
+
+  <section class="hero-shell overflow-hidden rounded-[2rem] p-6 md:p-8">
+    <div class="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
+      <div class="card-surface">
+        <div class="flex items-center gap-4">
+          <div class="flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-4xl shadow-sm">{{ selected_user.avatar }}</div>
+          <div>
+            <p class="text-sm text-slate-500">Player profile</p>
+            <h2 class="text-3xl font-black tracking-tight text-slate-900">{{ selected_user.nickname }}</h2>
+          </div>
+        </div>
+      </div>
+      <div class="grid gap-4 md:grid-cols-2">
+        <div class="prediction-card">
+          <p class="prediction-title">Points</p>
+          <p class="mt-3 text-3xl font-black text-slate-900">{{ selected_leaderboard_row.total_points if selected_leaderboard_row else 0 }}</p>
+        </div>
+        <div class="prediction-card">
+          <p class="prediction-title">Exact hits</p>
+          <p class="mt-3 text-3xl font-black text-slate-900">{{ selected_leaderboard_row.exact_hits if selected_leaderboard_row else 0 }}</p>
+        </div>
+        <div class="prediction-card">
+          <p class="prediction-title">Projected ceiling</p>
+          <p class="mt-3 text-3xl font-black text-slate-900">{{ selected_leaderboard_row.projected_ceiling if selected_leaderboard_row else 0 }}</p>
+        </div>
+        <div class="prediction-card">
+          <p class="prediction-title">Finals MVP tie break</p>
+          <p class="mt-3 text-xl font-bold text-slate-900">{{ "Alive" if selected_leaderboard_row and selected_leaderboard_row.finals_mvp_correct else "Not hit yet" }}</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card-surface">
+    <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Score breakdown</p>
+    {% if selected_leaderboard_row and selected_leaderboard_row.breakdown %}
+      <div class="mt-5 overflow-x-auto">
+        <table class="min-w-full text-left text-sm text-slate-600">
+          <thead>
+            <tr class="border-b border-slate-200 text-slate-500">
+              <th class="px-3 py-3">Board</th>
+              <th class="px-3 py-3">Type</th>
+              <th class="px-3 py-3">Points</th>
+              <th class="px-3 py-3">Breakdown</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in selected_leaderboard_row.breakdown %}
+              <tr class="border-b border-slate-100">
+                <td class="px-3 py-3 font-semibold text-slate-900">{{ item.window }}</td>
+                <td class="px-3 py-3">{{ item.type.replace("_", " ").title() }}</td>
+                <td class="px-3 py-3 font-semibold text-slate-900">{{ item.points }}</td>
+                <td class="px-3 py-3">
+                  {% for detail in item.details %}
+                    {{ detail.label }}: {{ detail.points }}{% if not loop.last %} • {% endif %}
+                  {% endfor %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="mt-5 text-slate-500">No points awarded yet.</div>
+    {% endif %}
+  </section>
+
+  <section class="card-surface">
+    <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Visible picks</p>
+    <h3 class="mt-2 text-2xl font-bold text-slate-900">Locked boards only</h3>
+    <div class="mt-5 grid gap-4">
+      {% for item in visible_picks %}
+        <article class="series-shell">
+          <p class="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">{{ item.window.name }}</p>
+          {% if item.type == "early" %}
+            <div class="mt-3 text-sm text-slate-700">
+              East finalist {{ team_name(item.payload.conference_finalists.get("East")) if item.payload.conference_finalists else "No pick" }} •
+              West finalist {{ team_name(item.payload.conference_finalists.get("West")) if item.payload.conference_finalists else "No pick" }} •
+              Champion {{ team_name(item.payload.champion) if item.payload.champion else "No pick" }} •
+              Finals MVP {{ item.payload.finals_mvp or "No pick" }}
+            </div>
+          {% else %}
+            <h4 class="mt-2 text-lg font-bold text-slate-900">{{ item.series.team_details[0].name }} vs {{ item.series.team_details[1].name }}</h4>
+            <p class="mt-2 text-sm text-slate-700">
+              Winner {{ team_name(item.payload.winner) if item.payload.winner else "No pick" }}
+              {% if item.type != "play_in" %} • {{ item.payload.exact_result or "-" }}{% endif %}
+            </p>
+          {% endif %}
+        </article>
+      {% else %}
+        <p class="text-slate-500">No locked picks are visible for this player yet.</p>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+{% endblock %}

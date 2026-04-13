@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="mx-auto max-w-2xl card-surface">
+  <span class="soft-badge">Invite only</span>
+  <h2 class="mt-4 text-3xl font-black text-slate-900">Join {{ pool.name }}</h2>
+  <p class="mt-3 text-base leading-7 text-slate-600">Pick a nickname, choose an emoji, and step into the pool. The Commissioner has already set up the board and The Monkey is waiting.</p>
+  <form action="/invite/{{ invite.token }}" method="post" class="mt-8 grid gap-4">
+    <input name="nickname" required class="friendly-input" placeholder="Nickname" />
+    <input name="email" class="friendly-input" placeholder="Email (optional)" />
+    <input name="avatar" value="🔥" maxlength="4" class="friendly-input" placeholder="Emoji avatar" />
+    <button class="primary-action">Join pool</button>
+  </form>
+</section>
+{% endblock %}

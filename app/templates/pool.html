@@ -1,0 +1,802 @@
+{% extends "base.html" %}
+{% block content %}
+{% set current_user = current_membership and users[current_membership.user_id] %}
+{% set is_commissioner = current_membership and current_membership.role == "commissioner" %}
+<div class="space-y-8">
+  {% if resume_message %}
+    <section class="rounded-[1.75rem] px-5 py-4 text-sm leading-6 {% if resume_status == 'success' %}bg-emerald-50 text-emerald-800{% else %}bg-orange-50 text-orange-800{% endif %}">
+      {{ resume_message }}
+    </section>
+  {% endif %}
+
+  <section class="hero-shell overflow-hidden rounded-[2rem] p-6 md:p-8">
+    <div class="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+      <div class="space-y-5">
+        <span class="soft-badge">Invite-only playoff challenge</span>
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">{{ pool.season_label }}</p>
+          <h2 class="mt-3 text-4xl font-black tracking-tight text-slate-900">{{ pool.name }}</h2>
+          <p class="mt-4 max-w-2xl text-base leading-7 text-slate-600">
+            Track the playoff pool, follow the bracket, and keep every lock, result, and recovery export in one place.
+          </p>
+        </div>
+        <div class="flex flex-wrap gap-3">
+          {% if invite %}
+            <a href="/invite/{{ invite.token }}" class="pill-link">Invite friends</a>
+          {% endif %}
+          {% if is_commissioner %}
+            <a href="/pools/{{ pool.id }}/export" class="pill-link pill-link--secondary">Download backup bundle</a>
+          {% endif %}
+        </div>
+      </div>
+      <div class="card-surface space-y-4">
+        <div class="flex items-center gap-4">
+          <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-3xl shadow-sm">{{ current_user.avatar if current_user else "🏀" }}</div>
+          <div>
+            <p class="text-sm text-slate-500">Signed in as</p>
+            <p class="text-xl font-bold text-slate-900">{{ current_user.nickname if current_user else "Guest" }}</p>
+          </div>
+        </div>
+        {% if current_membership %}
+          <div class="rounded-3xl bg-white/90 px-5 py-4 text-slate-700">
+            <p class="text-sm leading-6">
+              {{ "Commissioner controls are available in the Commissioner tab." if is_commissioner else "Player mode is active. Use Sign out if you want to switch back to another member, including the commissioner account." }}
+            </p>
+            <form action="/pools/{{ pool.id }}/signout" method="post" class="mt-4">
+              <button class="secondary-action">Sign out</button>
+            </form>
+          </div>
+        {% else %}
+          <div class="rounded-3xl bg-white/90 px-5 py-4 text-slate-700">
+            <p class="text-sm leading-6">Sign in with the same nickname and email you used before to switch back to any player or to the commissioner account.</p>
+            <form action="/pools/{{ pool.id }}/resume" method="post" class="mt-4 grid gap-3">
+              <input name="nickname" class="friendly-input" placeholder="Original nickname" required />
+              <input name="email" class="friendly-input" placeholder="Original email if you used one" />
+              <button class="primary-action">Sign in to this pool</button>
+            </form>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  <nav class="flex flex-wrap gap-3">
+    <a href="/pools/{{ pool.id }}?tab=overview" class="pill-link {% if active_tab != 'overview' %}pill-link--secondary{% endif %}">Overview</a>
+    <a href="/pools/{{ pool.id }}?tab=bets" class="pill-link {% if active_tab != 'bets' %}pill-link--secondary{% endif %}">Closed Bets</a>
+    <a href="/pools/{{ pool.id }}?tab=bracket" class="pill-link {% if active_tab != 'bracket' %}pill-link--secondary{% endif %}">Bracket</a>
+    {% if is_commissioner %}
+      <a href="/pools/{{ pool.id }}?tab=commissioner" class="pill-link {% if active_tab != 'commissioner' %}pill-link--secondary{% endif %}">Commissioner</a>
+    {% endif %}
+  </nav>
+
+  {% if active_tab == "overview" %}
+    <section class="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+      <div class="space-y-6">
+        <div class="card-surface">
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Leaderboard</p>
+              <h3 class="mt-2 text-2xl font-bold text-slate-900">Live standings</h3>
+              <p class="mt-2 text-sm leading-6 text-slate-500">{{ ceiling_explanation }}</p>
+            </div>
+            <span class="text-sm text-slate-500">Click any player to open their stats and locked picks.</span>
+          </div>
+          <div class="mt-5 grid gap-3">
+            {% for row in leaderboard_rows %}
+              <article class="leaderboard-row {% if row.is_monkey %}leaderboard-row--monkey{% endif %}">
+                <div class="flex items-center gap-4">
+                  <div class="leaderboard-rank">{{ row.rank }}</div>
+                  <div>
+                    <a href="/pools/{{ pool.id }}/players/{{ row.member_id }}" class="text-lg font-bold text-slate-900 no-underline hover:underline">{{ row.display_name }}</a>
+                    <p class="text-sm text-slate-500">
+                      Payout rank: {{ row.payout_rank or "Not ranked" }}
+                      {% if row.is_monkey %} • Bot player{% endif %}
+                    </p>
+                  </div>
+                </div>
+                <div class="flex flex-wrap items-center gap-3 text-sm text-slate-600">
+                  <span class="leaderboard-chip">{{ row.total_points }} pts</span>
+                  <span class="leaderboard-chip">{{ row.exact_hits }} exact</span>
+                  <span class="leaderboard-chip">Ceiling {{ row.projected_ceiling }}</span>
+                </div>
+              </article>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="space-y-5">
+          {% for window in windows %}
+            {% set current_state = window_submission_states.get(window.id, {}).get(current_membership.id, {}) if current_membership else {} %}
+            <article class="card-surface">
+              <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">{{ window.round_key.replace("_", " ") }}</p>
+                  <h3 class="mt-2 text-2xl font-bold text-slate-900">{{ window.name }}</h3>
+                  <p class="mt-2 text-sm leading-6 text-slate-500">Opens {{ window.opens_at }} • Locks {{ window.locks_at }}</p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <span class="status-pill {% if window.is_locked %}status-pill--locked{% else %}status-pill--open{% endif %}">
+                    {{ "Locked" if window.is_locked else "Open now" }}
+                  </span>
+                  {% if is_commissioner %}
+                    {% if window.is_locked %}
+                      <form action="/pools/{{ pool.id }}/windows/{{ window.id }}/unlock" method="post">
+                        <button class="secondary-action">Reopen</button>
+                      </form>
+                    {% else %}
+                      <form action="/pools/{{ pool.id }}/windows/{{ window.id }}/lock" method="post">
+                        <button class="secondary-action">Lock</button>
+                      </form>
+                    {% endif %}
+                  {% endif %}
+                </div>
+              </div>
+
+              {% if window.bet_type == "early" %}
+                <form action="/pools/{{ pool.id }}/windows/{{ window.id }}/submit" method="post" class="mt-6 grid gap-5" data-finals-scope="player-{{ window.id }}">
+                  <div class="grid gap-4 md:grid-cols-2">
+                    <div class="prediction-card">
+                      <p class="prediction-title">East path</p>
+                      <label class="field-label">Conference finalist</label>
+                      <select name="conference_finalists_east" class="friendly-select" {% if window.is_locked %}disabled{% endif %} required>
+                        <option value="">Choose a team</option>
+                        {% for option in window.config.get("conference_finalist_options", {}).get("East", []) %}
+                          <option value="{{ option }}" {% if current_state.get("conference_finalists", {}).get("East") == option %}selected{% endif %}>{{ team_name(option) }}</option>
+                        {% endfor %}
+                      </select>
+                      <label class="field-label mt-4">NBA finalist</label>
+                      <select name="nba_finalists_east" class="friendly-select" data-east-finalist {% if window.is_locked %}disabled{% endif %} required>
+                        <option value="">Choose a team</option>
+                        {% for option in window.config.get("nba_finalist_options", {}).get("East", []) %}
+                          <option value="{{ option }}" {% if current_state.get("nba_finalists", {}).get("East") == option %}selected{% endif %}>{{ team_name(option) }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="prediction-card">
+                      <p class="prediction-title">West path</p>
+                      <label class="field-label">Conference finalist</label>
+                      <select name="conference_finalists_west" class="friendly-select" {% if window.is_locked %}disabled{% endif %} required>
+                        <option value="">Choose a team</option>
+                        {% for option in window.config.get("conference_finalist_options", {}).get("West", []) %}
+                          <option value="{{ option }}" {% if current_state.get("conference_finalists", {}).get("West") == option %}selected{% endif %}>{{ team_name(option) }}</option>
+                        {% endfor %}
+                      </select>
+                      <label class="field-label mt-4">NBA finalist</label>
+                      <select name="nba_finalists_west" class="friendly-select" data-west-finalist {% if window.is_locked %}disabled{% endif %} required>
+                        <option value="">Choose a team</option>
+                        {% for option in window.config.get("nba_finalist_options", {}).get("West", []) %}
+                          <option value="{{ option }}" {% if current_state.get("nba_finalists", {}).get("West") == option %}selected{% endif %}>{{ team_name(option) }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                  </div>
+                  <div class="grid gap-4 md:grid-cols-2">
+                    <div class="prediction-card">
+                      <p class="prediction-title">Champion</p>
+                      <select name="champion" class="friendly-select" {% if window.is_locked %}disabled{% endif %} required>
+                        <option value="">Choose champion</option>
+                        {% for conference, teams in team_select_groups %}
+                          <optgroup label="{{ conference }} Conference">
+                            {% for team in teams %}
+                              {% if team.code in window.config.get("champion_options", []) %}
+                                <option value="{{ team.code }}" {% if current_state.get("champion") == team.code %}selected{% endif %}>{{ team.name }}</option>
+                              {% endif %}
+                            {% endfor %}
+                          </optgroup>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="prediction-card">
+                      <p class="prediction-title">Finals MVP</p>
+                      <select name="finals_mvp" class="friendly-select" data-finals-mvp data-selected="{{ current_state.get('finals_mvp', '') }}" {% if window.is_locked %}disabled{% endif %} required>
+                        <option value="">Choose Finals MVP</option>
+                      </select>
+                    </div>
+                  </div>
+                  {% if current_membership %}
+                    <button class="primary-action" {% if window.is_locked %}disabled{% endif %}>Save early picks</button>
+                  {% endif %}
+                </form>
+              {% else %}
+                <form action="/pools/{{ pool.id }}/windows/{{ window.id }}/submit" method="post" class="mt-6 space-y-6">
+                  {% for series in window.render_series %}
+                    {% set pick_state = current_state.get("series", {}).get(series.series_key, {}) %}
+                    <section class="series-shell">
+                      <div class="series-header">
+                        {% for team in series.team_details %}
+                          <div class="team-pill">
+                            <img src="{{ team.logo }}" alt="{{ team.name }} logo" class="team-logo" />
+                            <div>
+                              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">{{ team.abbr }}</p>
+                              <p class="text-base font-bold text-slate-900">{{ team.name }}</p>
+                            </div>
+                          </div>
+                        {% endfor %}
+                      </div>
+                      <div class="mt-4 flex flex-wrap items-center gap-3 text-sm text-slate-500">
+                        {% set matchup_row = matchup_lookup.get(series.series_key) %}
+                        <span>Official result: {{ matchup_row.result_summary if matchup_row and matchup_row.result_payload else "Pending" }}</span>
+                        {% if window.is_revealed or is_commissioner %}
+                          <a href="/pools/{{ pool.id }}/matchups/{{ series.series_key }}" class="pill-link pill-link--secondary">View pick table</a>
+                        {% endif %}
+                      </div>
+                      {% if not series.resolved %}
+                        <div class="rounded-[1.25rem] bg-[#fff8ef] px-4 py-3 text-sm leading-6 text-slate-500">
+                          This matchup unlocks automatically after the previous game or series determines both teams.
+                        </div>
+                      {% else %}
+                        <div class="grid gap-4 xl:grid-cols-2">
+                          <div class="prediction-card">
+                            <p class="prediction-title">{{ "Game winner" if window.bet_type == "play_in" else "Series winner" }}</p>
+                            <div class="choice-grid">
+                              {% for team in series.teams %}
+                                <label class="choice-card">
+                                  <input type="radio" name="winner_{{ series.series_key }}" value="{{ team }}" {% if pick_state.get("winner") == team %}checked{% endif %} {% if window.is_locked %}disabled{% endif %} required />
+                                  <span>{{ team_name(team) }}</span>
+                                </label>
+                              {% endfor %}
+                            </div>
+                          </div>
+                          {% if window.bet_type != "play_in" %}
+                            <div class="prediction-card">
+                              <p class="prediction-title">Total games</p>
+                              <div class="choice-grid choice-grid--compact">
+                                {% for games in [4, 5, 6, 7] %}
+                                  <label class="choice-card">
+                                    <input type="radio" name="games_count_{{ series.series_key }}" value="{{ games }}" {% if pick_state.get("games_count", 5) == games %}checked{% endif %} {% if window.is_locked %}disabled{% endif %} required />
+                                    <span>{{ games }} games</span>
+                                  </label>
+                                {% endfor %}
+                              </div>
+                            </div>
+                          {% endif %}
+                        </div>
+                      {% endif %}
+                    </section>
+                  {% endfor %}
+                  {% if current_membership %}
+                    <button class="primary-action" {% if window.is_locked %}disabled{% endif %}>Save this prediction</button>
+                  {% endif %}
+                </form>
+              {% endif %}
+            </article>
+          {% endfor %}
+        </div>
+      </div>
+
+      <aside class="space-y-6">
+        <section class="card-surface">
+          <div>
+            <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Tie breaks</p>
+            <h3 class="mt-2 text-2xl font-bold text-slate-900">How ties are resolved</h3>
+          </div>
+          <ol class="mt-5 space-y-3 text-sm leading-6 text-slate-600">
+            {% for rule in tie_break_rules %}
+              <li>{{ loop.index }}. {{ rule }}</li>
+            {% endfor %}
+          </ol>
+        </section>
+
+        <section class="card-surface">
+          <div>
+            <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Scoring rules</p>
+            <h3 class="mt-2 text-2xl font-bold text-slate-900">Full competition scoring</h3>
+          </div>
+          <div class="mt-5 space-y-4 text-sm leading-6 text-slate-600">
+            <div>
+              <p class="font-bold text-slate-900">Early picks</p>
+              <ul class="mt-2 space-y-1">
+                {% for rule in scoring_rules.early_picks %}
+                  <li>{{ rule }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+            <div>
+              <p class="font-bold text-slate-900">Round scoring</p>
+              <ul class="mt-2 space-y-1">
+                {% for rule in scoring_rules.series_rounds %}
+                  <li>{{ rule }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+            <div>
+              <p class="font-bold text-slate-900">Exact-result bonus</p>
+              <ul class="mt-2 space-y-1">
+                {% for rule in scoring_rules.exact_bonus %}
+                  <li>{{ rule }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+            <div>
+              <p class="font-bold text-slate-900">Tie breaks</p>
+              <ul class="mt-2 space-y-1">
+                {% for rule in scoring_rules.tie_break %}
+                  <li>{{ rule }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </section>
+  {% elif active_tab == "bets" %}
+    <section class="space-y-6">
+      <div class="card-surface">
+        <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Closed bets</p>
+        <h3 class="mt-2 text-2xl font-bold text-slate-900">Revealed picks by game</h3>
+      </div>
+      {% for row in closed_pick_tables %}
+        <article class="card-surface">
+          <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">{{ row.window.name }}</p>
+              {% if row.type == "early" %}
+                <h3 class="mt-2 text-xl font-bold text-slate-900">Early picks</h3>
+                <p class="mt-2 text-sm text-slate-500">
+                  Results:
+                  East finalist {{ row.result_summary.conference_finalists_east }} •
+                  West finalist {{ row.result_summary.conference_finalists_west }} •
+                  East NBA finalist {{ row.result_summary.nba_finalists_east }} •
+                  West NBA finalist {{ row.result_summary.nba_finalists_west }} •
+                  Champion {{ row.result_summary.champion }} •
+                  Finals MVP {{ row.result_summary.finals_mvp }}
+                </p>
+              {% else %}
+                <h3 class="mt-2 text-xl font-bold text-slate-900">{{ row.series.team_details[0].name }} vs {{ row.series.team_details[1].name }}</h3>
+                <p class="mt-2 text-sm text-slate-500">Official result: {{ row.result_summary }}</p>
+              {% endif %}
+            </div>
+            {% if row.type != "early" %}
+              <a href="/pools/{{ pool.id }}/matchups/{{ row.series.series_key }}" class="pill-link pill-link--secondary">Open table view</a>
+            {% endif %}
+          </div>
+          <div class="mt-5 overflow-x-auto">
+            {% if row.type == "early" %}
+              <table class="min-w-full text-left text-sm text-slate-600">
+                <thead>
+                  <tr class="border-b border-slate-200 text-slate-500">
+                    <th class="px-3 py-3">Player</th>
+                    <th class="px-3 py-3">East CF</th>
+                    <th class="px-3 py-3">West CF</th>
+                    <th class="px-3 py-3">East finalist</th>
+                    <th class="px-3 py-3">West finalist</th>
+                    <th class="px-3 py-3">Champion</th>
+                    <th class="px-3 py-3">Finals MVP</th>
+                    <th class="px-3 py-3">Points</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for pick_row in row.rows %}
+                    <tr class="border-b border-slate-100 {% if pick_row.user.is_monkey %}bg-[#fff8ef]{% endif %}">
+                      <td class="px-3 py-3 font-semibold text-slate-900">
+                        <a href="/pools/{{ pool.id }}/players/{{ pick_row.member.id }}" class="no-underline hover:underline">{{ pick_row.user.nickname }}</a>
+                      </td>
+                      <td class="px-3 py-3">{{ pick_row.conference_finalists_east }}</td>
+                      <td class="px-3 py-3">{{ pick_row.conference_finalists_west }}</td>
+                      <td class="px-3 py-3">{{ pick_row.nba_finalists_east }}</td>
+                      <td class="px-3 py-3">{{ pick_row.nba_finalists_west }}</td>
+                      <td class="px-3 py-3">{{ pick_row.champion }}</td>
+                      <td class="px-3 py-3">{{ pick_row.finals_mvp }}</td>
+                      <td class="px-3 py-3 font-semibold text-slate-900">{{ pick_row.points }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% else %}
+              <table class="min-w-full text-left text-sm text-slate-600">
+                <thead>
+                  <tr class="border-b border-slate-200 text-slate-500">
+                    <th class="px-3 py-3">Player</th>
+                    <th class="px-3 py-3">Winner pick</th>
+                    {% if row.type != "play_in" %}
+                      <th class="px-3 py-3">Result pick</th>
+                    {% endif %}
+                    <th class="px-3 py-3">Points from matchup</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for pick_row in row.rows %}
+                    <tr class="border-b border-slate-100 {% if pick_row.user.is_monkey %}bg-[#fff8ef]{% endif %}">
+                      <td class="px-3 py-3 font-semibold text-slate-900">
+                        <a href="/pools/{{ pool.id }}/players/{{ pick_row.member.id }}" class="no-underline hover:underline">{{ pick_row.user.nickname }}</a>
+                      </td>
+                      <td class="px-3 py-3">{{ pick_row.winner_pick }}</td>
+                      {% if row.type != "play_in" %}
+                        <td class="px-3 py-3">{{ pick_row.exact_result_pick }}</td>
+                      {% endif %}
+                      <td class="px-3 py-3 font-semibold text-slate-900">{{ pick_row.points }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% endif %}
+          </div>
+        </article>
+      {% else %}
+        <div class="card-surface text-slate-500">No windows have been locked and revealed yet.</div>
+      {% endfor %}
+    </section>
+  {% elif active_tab == "bracket" %}
+    <section class="space-y-6">
+      <div class="card-surface">
+        <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Bracket</p>
+        <h3 class="mt-2 text-2xl font-bold text-slate-900">Play-In and playoff path</h3>
+        <p class="mt-3 text-sm leading-6 text-slate-600">{{ play_in_explanation }}</p>
+      </div>
+      {% for section in bracket_sections %}
+        <div class="card-surface">
+          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">{{ section.title }}</p>
+          <div class="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {% for matchup in section.matchups %}
+              <article class="series-shell">
+                <p class="prediction-title">{{ matchup.title }}</p>
+                <div class="mt-4 space-y-2 text-sm text-slate-700">
+                  <div>{{ matchup.teams[0] }}</div>
+                  <div>{{ matchup.teams[1] }}</div>
+                </div>
+                <p class="mt-4 text-sm font-semibold text-slate-500">Winner: {{ matchup.winner or "TBD" }}</p>
+              </article>
+            {% endfor %}
+          </div>
+        </div>
+      {% else %}
+        <div class="card-surface text-slate-500">Generate the seeded bracket from the Commissioner tab to see the Play-In, First Round, and Second Round structure.</div>
+      {% endfor %}
+    </section>
+  {% else %}
+    <section class="space-y-6">
+      <div class="card-surface">
+        <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Commissioner</p>
+        <h3 class="mt-2 text-2xl font-bold text-slate-900">Control center</h3>
+      </div>
+
+      <section class="card-surface space-y-5">
+        <div>
+          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Manual window</p>
+          <h3 class="mt-2 text-2xl font-bold text-slate-900">Create a betting window</h3>
+          <p class="mt-3 text-sm leading-6 text-slate-600">{{ play_in_explanation }}</p>
+        </div>
+        <form action="/pools/{{ pool.id }}/windows" method="post" class="grid gap-4">
+          <input type="hidden" name="next_tab" value="commissioner" />
+          <input name="name" class="friendly-input" placeholder="Window name auto-generates" data-window-name />
+          <div class="grid gap-4 md:grid-cols-2">
+            <select name="round_key" class="friendly-select" data-round-select>
+              <option value="round_1">Round 1</option>
+              <option value="round_2">Round 2</option>
+              <option value="conference_finals">Conference Finals</option>
+              <option value="finals">NBA Finals</option>
+              <option value="play_in">Play-In</option>
+              <option value="early">Early picks</option>
+            </select>
+            <select name="bet_type" class="friendly-select" data-window-type>
+              <option value="series">Series dashboard</option>
+              <option value="play_in">Play-In game</option>
+              <option value="early">Early picks board</option>
+            </select>
+          </div>
+          <div class="grid gap-4 md:grid-cols-2">
+            <input name="opens_at" type="datetime-local" class="friendly-input" value="{{ default_window_opens_at }}" required />
+            <input name="locks_at" type="datetime-local" class="friendly-input" value="{{ default_window_locks_at }}" required />
+          </div>
+          <div class="grid gap-4 md:grid-cols-2" data-series-builder>
+            <select name="team_one" class="friendly-select" data-team-select="one">
+              <option value="">Choose team one</option>
+              {% for conference, teams in team_select_groups %}
+                <optgroup label="{{ conference }} Conference">
+                  {% for team in teams %}
+                    <option value="{{ team.code }}" data-team-name="{{ team.name }}">{{ team.name }}</option>
+                  {% endfor %}
+                </optgroup>
+              {% endfor %}
+            </select>
+            <select name="team_two" class="friendly-select" data-team-select="two">
+              <option value="">Choose team two</option>
+              {% for conference, teams in team_select_groups %}
+                <optgroup label="{{ conference }} Conference">
+                  {% for team in teams %}
+                    <option value="{{ team.code }}" data-team-name="{{ team.name }}">{{ team.name }}</option>
+                  {% endfor %}
+                </optgroup>
+              {% endfor %}
+            </select>
+          </div>
+          <input name="series_key" class="friendly-input" placeholder="Series key auto-generates if blank" data-series-builder />
+          <button class="primary-action">Create window</button>
+        </form>
+      </section>
+
+      <section class="card-surface space-y-5">
+        <div>
+          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Seeded setup</p>
+          <h3 class="mt-2 text-2xl font-bold text-slate-900">Generate Play-In through Round 2</h3>
+        </div>
+        <form action="/pools/{{ pool.id }}/generate-bracket" method="post" class="grid gap-4">
+          <div class="grid gap-4 md:grid-cols-2">
+            <input name="opens_at" type="datetime-local" class="friendly-input" value="{{ default_window_opens_at }}" required />
+            <input name="locks_at" type="datetime-local" class="friendly-input" value="{{ default_window_locks_at }}" required />
+          </div>
+          <div class="grid gap-6 lg:grid-cols-2">
+            {% for conference in ["East", "West"] %}
+              <div class="prediction-card">
+                <p class="prediction-title">{{ conference }} top 10 seeds</p>
+                <div class="mt-4 grid gap-3">
+                  {% for seed in range(1, 11) %}
+                    <select name="{{ conference.lower() }}_seed_{{ seed }}" class="friendly-select" required>
+                      <option value="">{{ conference }} seed {{ seed }}</option>
+                      {% for group_name, teams in team_select_groups %}
+                        {% if group_name == conference %}
+                          {% for team in teams %}
+                            <option value="{{ team.code }}">{{ seed }}. {{ team.name }}</option>
+                          {% endfor %}
+                        {% endif %}
+                      {% endfor %}
+                    </select>
+                  {% endfor %}
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+          <button class="primary-action">Generate bracket windows</button>
+        </form>
+      </section>
+
+      <section class="card-surface space-y-6">
+        <div>
+          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Season results</p>
+          <h3 class="mt-2 text-2xl font-bold text-slate-900">Update each outcome separately</h3>
+        </div>
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3" data-finals-scope="commissioner-results">
+          {% for field_name, label, options in [
+            ("conference_finalists_east", "East conference finalist", early_window.config.get("conference_finalist_options", {}).get("East", []) if early_window else []),
+            ("conference_finalists_west", "West conference finalist", early_window.config.get("conference_finalist_options", {}).get("West", []) if early_window else []),
+            ("nba_finalists_east", "East NBA finalist", early_window.config.get("nba_finalist_options", {}).get("East", []) if early_window else []),
+            ("nba_finalists_west", "West NBA finalist", early_window.config.get("nba_finalist_options", {}).get("West", []) if early_window else []),
+          ] %}
+            <form action="/pools/{{ pool.id }}/results/early-field" method="post" class="prediction-card">
+              <p class="prediction-title">{{ label }}</p>
+              <input type="hidden" name="field_name" value="{{ field_name }}" />
+              <select name="field_value" class="friendly-select mt-4 {% if field_name == 'nba_finalists_east' %}js-east-finalist{% elif field_name == 'nba_finalists_west' %}js-west-finalist{% endif %}" {% if field_name == 'nba_finalists_east' %}data-east-finalist{% elif field_name == 'nba_finalists_west' %}data-west-finalist{% endif %} required>
+                <option value="">Choose team</option>
+                {% for option in options %}
+                  {% set current_value = early_result_state.conference_finalists.East if field_name == 'conference_finalists_east' else early_result_state.conference_finalists.West if field_name == 'conference_finalists_west' else early_result_state.nba_finalists.East if field_name == 'nba_finalists_east' else early_result_state.nba_finalists.West %}
+                  <option value="{{ option }}" {% if current_value == option %}selected{% endif %}>{{ team_name(option) }}</option>
+                {% endfor %}
+              </select>
+              <button class="primary-action mt-4">Save</button>
+            </form>
+          {% endfor %}
+          <form action="/pools/{{ pool.id }}/results/early-field" method="post" class="prediction-card">
+            <p class="prediction-title">Champion</p>
+            <input type="hidden" name="field_name" value="champion" />
+            <select name="field_value" class="friendly-select mt-4" required>
+              <option value="">Choose champion</option>
+              {% if early_window %}
+                {% for conference, teams in team_select_groups %}
+                  <optgroup label="{{ conference }} Conference">
+                    {% for team in teams %}
+                      {% if team.code in early_window.config.get("champion_options", []) %}
+                        <option value="{{ team.code }}" {% if early_result_state.champion == team.code %}selected{% endif %}>{{ team.name }}</option>
+                      {% endif %}
+                    {% endfor %}
+                  </optgroup>
+                {% endfor %}
+              {% endif %}
+            </select>
+            <button class="primary-action mt-4">Save</button>
+          </form>
+          <form action="/pools/{{ pool.id }}/results/early-field" method="post" class="prediction-card">
+            <p class="prediction-title">Finals MVP</p>
+            <input type="hidden" name="field_name" value="finals_mvp" />
+            <select name="field_value" class="friendly-select mt-4" data-finals-mvp data-selected="{{ early_result_state.finals_mvp }}" required>
+              <option value="">Choose Finals MVP</option>
+            </select>
+            <button class="primary-action mt-4">Save</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="card-surface space-y-6">
+        <div>
+          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Game and series results</p>
+          <h3 class="mt-2 text-2xl font-bold text-slate-900">Record official outcomes</h3>
+        </div>
+        {% for window in windows %}
+          {% if window.bet_type in ["series", "play_in"] %}
+            {% for series in window.render_series %}
+              <form action="/pools/{{ pool.id }}/results" method="post" class="series-shell">
+                <input type="hidden" name="scope_type" value="series" />
+                <input type="hidden" name="scope_key" value="{{ series.series_key }}" />
+                <input type="hidden" name="bet_type" value="{{ window.bet_type }}" />
+                <div class="series-header">
+                  {% for team in series.team_details %}
+                    <div class="team-pill">
+                      <img src="{{ team.logo }}" alt="{{ team.name }} logo" class="team-logo" />
+                      <div>
+                        <p class="text-xs uppercase tracking-[0.2em] text-slate-500">{{ team.abbr }}</p>
+                        <p class="text-base font-bold text-slate-900">{{ team.name }}</p>
+                      </div>
+                    </div>
+                  {% endfor %}
+                </div>
+                {% if not series.resolved %}
+                  <div class="rounded-[1.25rem] bg-[#fff8ef] px-4 py-3 text-sm leading-6 text-slate-500">
+                    This result form opens after the bracket resolves both teams for the matchup.
+                  </div>
+                {% else %}
+                  <div class="grid gap-4 lg:grid-cols-2">
+                    <div class="prediction-card">
+                      <p class="prediction-title">{{ "Winner" if window.bet_type == "play_in" else "Series winner" }}</p>
+                      <div class="choice-grid">
+                        {% for team in series.teams %}
+                          <label class="choice-card">
+                            <input type="radio" name="result_winner" value="{{ team }}" required />
+                            <span>{{ team_name(team) }}</span>
+                          </label>
+                        {% endfor %}
+                      </div>
+                    </div>
+                    {% if window.bet_type != "play_in" %}
+                      <div class="prediction-card">
+                        <p class="prediction-title">Total games</p>
+                        <div class="choice-grid choice-grid--compact">
+                          {% for games in [4, 5, 6, 7] %}
+                            <label class="choice-card">
+                              <input type="radio" name="result_games_count" value="{{ games }}" {% if games == 5 %}checked{% endif %} required />
+                              <span>{{ games }} games</span>
+                            </label>
+                          {% endfor %}
+                        </div>
+                      </div>
+                    {% endif %}
+                  </div>
+                  <div class="grid gap-4 lg:grid-cols-3 mt-4">
+                    <input name="display_score" class="friendly-input" placeholder="Official score/result e.g. 4-2 or 112-108" />
+                    <input name="source" class="friendly-input" value="manual" />
+                    <input name="override_reason" class="friendly-input" placeholder="Optional override reason" />
+                  </div>
+                  <button class="primary-action mt-4">Save result</button>
+                {% endif %}
+              </form>
+            {% endfor %}
+          {% endif %}
+        {% endfor %}
+      </section>
+
+      <section class="card-surface space-y-5">
+        <div>
+          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Window controls</p>
+          <h3 class="mt-2 text-2xl font-bold text-slate-900">Lock or reopen any board</h3>
+        </div>
+        <div class="grid gap-3">
+          {% for window in windows %}
+            <div class="leaderboard-row">
+              <div>
+                <p class="text-lg font-bold text-slate-900">{{ window.name }}</p>
+                <p class="text-sm text-slate-500">{{ window.round_key.replace("_", " ") }}</p>
+              </div>
+              <div class="flex gap-3">
+                {% if window.is_locked %}
+                  <form action="/pools/{{ pool.id }}/windows/{{ window.id }}/unlock" method="post">
+                    <button class="secondary-action">Reopen</button>
+                  </form>
+                {% else %}
+                  <form action="/pools/{{ pool.id }}/windows/{{ window.id }}/lock" method="post">
+                    <button class="secondary-action">Lock</button>
+                  </form>
+                {% endif %}
+                <form action="/pools/{{ pool.id }}/windows/{{ window.id }}/delete" method="post" onsubmit="return confirm('Delete this game or board and its related picks/results?');">
+                  <button class="secondary-action">Delete</button>
+                </form>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="card-surface">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Result feed</p>
+            <h3 class="mt-2 text-2xl font-bold text-slate-900">Commissioner-only audit log</h3>
+          </div>
+        </div>
+        <div class="mt-5 grid gap-3">
+          {% for card in result_cards %}
+            <article class="rounded-[1.5rem] bg-[#fff8ef] p-5">
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <h4 class="text-lg font-bold text-slate-900">{{ card["title"] }}</h4>
+                  <p class="text-sm text-slate-500">{{ card["subtitle"] }}</p>
+                </div>
+                {% if card["override"] %}
+                  <span class="status-pill status-pill--override">Override</span>
+                {% endif %}
+              </div>
+              <ul class="mt-4 space-y-2 text-sm leading-6 text-slate-600">
+                {% for item in card["items"] %}
+                  <li>• {{ item }}</li>
+                {% endfor %}
+              </ul>
+            </article>
+          {% else %}
+            <div class="rounded-[1.5rem] bg-[#fff8ef] p-5 text-sm leading-6 text-slate-500">No results posted yet.</div>
+          {% endfor %}
+        </div>
+      </section>
+    </section>
+  {% endif %}
+</div>
+
+<script>
+  const teamPlayerLookup = {{ team_player_lookup | tojson }};
+
+  const updateFinalsMvpSelect = (scope) => {
+    const root = document.querySelector(`[data-finals-scope="${scope}"]`);
+    if (!root) return;
+    const eastSelect = root.querySelector("[data-east-finalist]");
+    const westSelect = root.querySelector("[data-west-finalist]");
+    const mvpSelect = root.querySelector("[data-finals-mvp]");
+    if (!eastSelect || !westSelect || !mvpSelect) return;
+    const selectedValue = mvpSelect.dataset.selected || mvpSelect.value;
+    const options = [];
+    [eastSelect.value, westSelect.value].forEach((teamCode) => {
+      (teamPlayerLookup[teamCode] || []).forEach((player) => {
+        if (!options.includes(player)) options.push(player);
+      });
+    });
+    mvpSelect.innerHTML = '<option value="">Choose Finals MVP</option>';
+    options.forEach((player) => {
+      const option = document.createElement("option");
+      option.value = player;
+      option.textContent = player;
+      if (player === selectedValue) option.selected = true;
+      mvpSelect.appendChild(option);
+    });
+  };
+
+  document.querySelectorAll("[data-finals-scope]").forEach((scopeNode) => {
+    const scope = scopeNode.dataset.finalsScope;
+    scopeNode.querySelectorAll("[data-east-finalist], [data-west-finalist]").forEach((field) => {
+      field.addEventListener("change", () => updateFinalsMvpSelect(scope));
+    });
+    updateFinalsMvpSelect(scope);
+  });
+
+  document.querySelectorAll("[data-window-type]").forEach((select) => {
+    const toggleSeriesBuilder = () => {
+      const showSeriesBuilder = select.value !== "early";
+      document.querySelectorAll("[data-series-builder]").forEach((field) => field.classList.toggle("hidden", !showSeriesBuilder));
+    };
+    select.addEventListener("change", toggleSeriesBuilder);
+    toggleSeriesBuilder();
+  });
+
+  document.querySelectorAll("form[action$='/windows']").forEach((form) => {
+    const roundSelect = form.querySelector("[data-round-select]");
+    const typeSelect = form.querySelector("[data-window-type]");
+    const teamOneSelect = form.querySelector("[data-team-select='one']");
+    const teamTwoSelect = form.querySelector("[data-team-select='two']");
+    const nameInput = form.querySelector("[data-window-name]");
+
+    const optionLabel = (select) => {
+      const option = select?.selectedOptions?.[0];
+      return option?.dataset.teamName || option?.textContent?.trim() || "";
+    };
+
+    const updateWindowName = () => {
+      if (!nameInput || !roundSelect || !typeSelect) return;
+      if (typeSelect.value === "early" || roundSelect.value === "early") {
+        nameInput.value = "Early Picks";
+        return;
+      }
+      const roundLabel = roundSelect.selectedOptions?.[0]?.textContent?.trim() || "Round";
+      const teamOne = optionLabel(teamOneSelect);
+      const teamTwo = optionLabel(teamTwoSelect);
+      nameInput.value = teamOne && teamTwo ? `${roundLabel}: ${teamOne} vs ${teamTwo}` : roundLabel;
+    };
+
+    [roundSelect, typeSelect, teamOneSelect, teamTwoSelect].forEach((field) => field?.addEventListener("change", updateWindowName));
+    updateWindowName();
+  });
+</script>
+{% endblock %}

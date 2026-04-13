@@ -1,0 +1,91 @@
+Metadata-Version: 2.4
+Name: nba-playoff-pool
+Version: 0.1.0
+Summary: Private NBA playoff pool web app with deterministic scoring and recovery exports.
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn>=0.30.0
+Requires-Dist: sqlalchemy>=2.0.35
+Requires-Dist: psycopg[binary]>=3.2.0
+Requires-Dist: jinja2>=3.1.4
+Requires-Dist: python-multipart>=0.0.12
+Requires-Dist: itsdangerous>=2.2.0
+Requires-Dist: httpx>=0.27.2
+Requires-Dist: openpyxl>=3.1.5
+Requires-Dist: apscheduler>=3.10.4
+Requires-Dist: pydantic-settings>=2.5.2
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3.3; extra == "dev"
+Requires-Dist: pytest-cov>=5.0.0; extra == "dev"
+
+# NBA Playoff Pool
+
+Private NBA playoff pool web app built with FastAPI, SQLAlchemy, Jinja templates, and a deterministic scoring engine.
+
+## What is included
+
+- Invite-only pool creation and join flow
+- Commissioner and player roles
+- Early-pick and per-round betting windows
+- Deterministic scoring engine with tie-breakers
+- The Monkey automated participant
+- Manual result snapshots and override logging
+- Recovery bundle export with `snapshot.json`, CSVs, and an operator workbook
+- JSON-based pool recovery
+- Scheduled automation for monkey submissions and auto-locking
+- pytest coverage for scoring and key app flows
+
+## Quick start
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .[dev]
+uvicorn app.main:app --reload
+```
+
+The app runs on [http://localhost:8000](http://localhost:8000).
+
+## One-command start
+
+```bash
+./scripts/start.sh
+```
+
+This creates `.venv` if needed, installs dependencies on the first run, and starts the FastAPI app with reload enabled.
+
+By default it uses SQLite at `./nba_pool.db`. To run with PostgreSQL:
+
+```bash
+docker compose up --build
+```
+
+## Environment variables
+
+- `DATABASE_URL`
+- `SECRET_KEY`
+- `NBA_PROVIDER_API_KEY`
+- `SCHEDULER_ENABLED`
+
+## Recovery model
+
+Exports produce a zip bundle containing:
+
+- `snapshot.json` as the authoritative restore file
+- CSV extracts per table
+- `fallback_workbook.xlsx` as a human-usable workbook for operations continuity
+
+The workbook is meant for manual continuity and transparency. The JSON snapshot is the source used for app-grade recovery.
+
+## Testing
+
+```bash
+pytest
+```
+
+## Notes
+
+- The app supports SQLite for local speed and PostgreSQL for deployment.
+- The BallDontLie provider is kept behind an adapter boundary so it can be replaced later.
+- Play-In is intentionally data-ready but not fully scored by default until rules are finalized.
