@@ -29,9 +29,6 @@
           {% if invite %}
             <a href="/invite/{{ invite.token }}" class="pill-link">Register To Pool</a>
           {% endif %}
-          {% if is_commissioner %}
-            <a href="/pools/{{ pool.id }}/export" class="pill-link pill-link--secondary">Download backup bundle</a>
-          {% endif %}
         </div>
       </div>
       <div class="card-surface space-y-4">
@@ -954,6 +951,17 @@
               </div>
             </div>
           {% endfor %}
+        </div>
+      </section>
+
+      <section class="card-surface">
+        <div class="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Recovery</p>
+            <h3 class="mt-2 text-2xl font-bold text-slate-900">Commissioner backup tools</h3>
+            <p class="mt-2 text-sm leading-6 text-slate-500">Export the full recovery bundle with JSON, CSV, and workbook outputs. This action is available only to the commissioner.</p>
+          </div>
+          <a href="/pools/{{ pool.id }}/export" class="pill-link pill-link--secondary">Download backup bundle</a>
         </div>
       </section>
 
