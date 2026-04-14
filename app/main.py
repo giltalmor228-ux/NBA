@@ -124,7 +124,7 @@ def localize_datetime_input(value: datetime) -> str:
 def localize_datetime_display(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
+    return value.astimezone(LOCAL_TZ).strftime("%d-%m-%Y %H:%M")
 
 
 templates.env.globals["localize_datetime_display"] = localize_datetime_display
