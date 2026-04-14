@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -67,7 +68,12 @@ def team_name(abbreviation: str | None) -> str:
 def team_logo(abbreviation: str | None) -> str:
     if not abbreviation:
         return "https://placehold.co/144x144/F2E8DE/5B5B5B?text=NBA"
-    return f"https://a.espncdn.com/i/teamlogos/nba/500/{abbreviation.lower()}.png"
+    espn_slug_overrides = {
+        "UTA": "utah",
+    }
+    normalized = abbreviation.upper()
+    slug = espn_slug_overrides.get(normalized, normalized.lower())
+    return f"https://a.espncdn.com/i/teamlogos/nba/500/{slug}.png"
 
 
 templates.env.globals["team_name"] = team_name
@@ -180,6 +186,51 @@ def _slot_label(slot: dict[str, Any]) -> str:
     return "TBD"
 
 
+def _seed_ordinal(value: int) -> str:
+    if 10 <= value % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(value % 10, "th")
+    return f"{value}{suffix}"
+
+
+def _slot_seed_text(slot: dict[str, Any]) -> str | None:
+    slot_type = slot.get("type")
+    if slot_type == "seed":
+        seed = slot.get("seed")
+        if seed:
+            return _seed_ordinal(int(seed))
+    if slot_type == "play_in_seed":
+        seed = slot.get("seed")
+        if seed:
+            return f"{seed} seed"
+    if slot_type == "winner_of":
+        series_key = str(slot.get("series_key") or "")
+        if series_key.endswith("7v8"):
+            return "Winner 7/8"
+        if series_key.endswith("9v10"):
+            return "Winner 9/10"
+    if slot_type == "loser_of":
+        series_key = str(slot.get("series_key") or "")
+        if series_key.endswith("7v8"):
+            return "Loser 7/8"
+        if series_key.endswith("9v10"):
+            return "Loser 9/10"
+    return None
+
+
+def _series_key_seed_text(series_key: str, index: int) -> str | None:
+    match = re.search(r"-(\d+)v(\d+)$", series_key)
+    if not match:
+        return None
+    left_seed = int(match.group(1))
+    right_seed = int(match.group(2))
+    target_seed = left_seed if index == 0 else right_seed
+    if "round_1" in series_key or series_key.endswith("7v8") or series_key.endswith("9v10"):
+        return _seed_ordinal(target_seed)
+    return None
+
+
 def _resolve_slot(slot: dict[str, Any], result_payloads: dict[tuple[str, str], dict[str, Any]]) -> str | None:
     slot_type = slot.get("type")
     if slot_type == "team":
@@ -205,6 +256,15 @@ def _series_display_meta(series: dict[str, Any], result_payloads: dict[tuple[str
     teams = [_resolve_slot(slot, result_payloads) for slot in slots]
     labels = [team_name(team) if team else _slot_label(slot) for team, slot in zip(teams, slots, strict=False)]
     return [team for team in teams if team], labels
+
+
+def _series_display_name(series: dict[str, Any]) -> str:
+    if series.get("team_details"):
+        return f"{series['team_details'][0]['name']} vs {series['team_details'][1]['name']}"
+    teams = series.get("teams", [])
+    if len(teams) == 2:
+        return f"{team_name(teams[0])} vs {team_name(teams[1])}"
+    return series.get("label") or series.get("series_key", "this matchup")
 
 
 def _generate_monkey_payload(window: BettingWindow) -> dict[str, Any]:
@@ -355,6 +415,40 @@ def _build_bracket_sections(windows: list[BettingWindow], results: list[ResultSn
         if matchups:
             sections.append({"title": title, "matchups": matchups})
     return sections
+
+
+def _build_bracket_board(windows: list[BettingWindow], results: list[ResultSnapshot]) -> dict[str, Any]:
+    result_payloads = latest_result_payloads(results)
+    series_lookup: dict[str, dict[str, Any]] = {}
+    for window in windows:
+        for series in getattr(window, "render_series", []):
+            labels = [team["name"] for team in series["team_details"]]
+            result_payload = result_payloads.get(("series", series["series_key"]))
+            series_lookup[series["series_key"]] = {
+                "key": series["series_key"],
+                "label": series.get("label") or window.name,
+                "round_key": window.round_key,
+                "conference": series.get("conference"),
+                "teams": labels,
+                "team_details": series["team_details"],
+                "winner": team_name(result_payload.get("winner")) if result_payload and result_payload.get("winner") else None,
+                "result_summary": format_result_summary(series, result_payload),
+                "best_of": series.get("best_of", 7),
+            }
+
+    def pick(*keys: str) -> list[dict[str, Any]]:
+        return [series_lookup[key] for key in keys if key in series_lookup]
+
+    return {
+        "west_play_in": pick("play_in-west-9v10", "play_in-west-7v8", "play_in-west-8seed"),
+        "east_play_in": pick("play_in-east-7v8", "play_in-east-9v10", "play_in-east-8seed"),
+        "west_round_1": pick("round_1-west-1v8", "round_1-west-4v5", "round_1-west-3v6", "round_1-west-2v7"),
+        "east_round_1": pick("round_1-east-1v8", "round_1-east-4v5", "round_1-east-3v6", "round_1-east-2v7"),
+        "west_round_2": pick("round_2-west-top", "round_2-west-bottom"),
+        "east_round_2": pick("round_2-east-top", "round_2-east-bottom"),
+        "conference_finals": pick("conference_finals-west", "conference_finals-east"),
+        "finals": pick("finals-nba"),
+    }
 
 
 def _series_pick_rows(windows: list[BettingWindow], memberships: list[Membership], users: dict[str, User], submissions: list[PickSubmission]) -> list[dict[str, Any]]:
@@ -646,9 +740,10 @@ async def parse_submission_payload(request: Request, window: BettingWindow) -> d
     return payload
 
 
-async def parse_bulk_submission_payloads(request: Request, windows: list[BettingWindow]) -> list[tuple[BettingWindow, dict[str, Any]]]:
+async def parse_bulk_submission_payloads(request: Request, windows: list[BettingWindow]) -> tuple[list[tuple[BettingWindow, dict[str, Any]]], list[str]]:
     form = await request.form()
     submissions_to_save: list[tuple[BettingWindow, dict[str, Any]]] = []
+    skipped_labels: list[str] = []
 
     for window in windows:
         if window.is_locked:
@@ -678,25 +773,25 @@ async def parse_bulk_submission_payloads(request: Request, windows: list[Betting
             )
             if not marked:
                 continue
-            missing = [
-                label
-                for label, value in [
-                    ("East conference finalist", payload["conference_finalists"]["East"]),
-                    ("West conference finalist", payload["conference_finalists"]["West"]),
-                    ("East NBA finalist", payload["nba_finalists"]["East"]),
-                    ("West NBA finalist", payload["nba_finalists"]["West"]),
-                    ("Champion", payload["champion"]),
-                    ("Finals MVP", payload["finals_mvp"]),
+            missing = any(
+                not value
+                for value in [
+                    payload["conference_finalists"]["East"],
+                    payload["conference_finalists"]["West"],
+                    payload["nba_finalists"]["East"],
+                    payload["nba_finalists"]["West"],
+                    payload["champion"],
+                    payload["finals_mvp"],
                 ]
-                if not value
-            ]
+            )
             if missing:
-                raise HTTPException(status_code=400, detail=f"Complete every early-pick field before saving. Missing: {', '.join(missing)}.")
-            submissions_to_save.append((window, payload))
+                skipped_labels.append(window.name)
+            else:
+                submissions_to_save.append((window, payload))
             continue
 
         payload: dict[str, Any] = {"series": {}}
-        window_marked = False
+        window_has_saved_series = False
         for series in getattr(window, "render_series", []):
             if not series["resolved"]:
                 continue
@@ -706,23 +801,27 @@ async def parse_bulk_submission_payloads(request: Request, windows: list[Betting
             marked = bool(winner or games_count_raw)
             if not marked:
                 continue
-            window_marked = True
             if not winner:
-                raise HTTPException(status_code=400, detail=f"Choose a winner before saving {series_key}.")
+                skipped_labels.append(_series_display_name(series))
+                continue
             if window.bet_type == "play_in":
                 payload["series"][series_key] = {"winner": winner, "exact_result": "1-0"}
+                window_has_saved_series = True
                 continue
             if not games_count_raw:
-                raise HTTPException(status_code=400, detail=f"Choose total games before saving {series_key}.")
+                skipped_labels.append(_series_display_name(series))
+                continue
             try:
                 games_count = max(4, min(7, int(games_count_raw)))
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=f"Total games must be between 4 and 7 for {series_key}.") from exc
+            except ValueError:
+                skipped_labels.append(_series_display_name(series))
+                continue
             payload["series"][series_key] = {"winner": winner, "exact_result": f"4-{games_count - 4}"}
-        if window_marked:
+            window_has_saved_series = True
+        if window_has_saved_series:
             submissions_to_save.append((window, payload))
 
-    return submissions_to_save
+    return submissions_to_save, skipped_labels
 
 
 async def parse_result_payload(request: Request) -> tuple[str, str, dict[str, Any], str, str]:
@@ -798,9 +897,10 @@ async def parse_result_payload(request: Request) -> tuple[str, str, dict[str, An
     return ("series", str(form.get("scope_key") or ""), payload, source, override_reason)
 
 
-async def parse_bulk_result_payloads(request: Request, windows: list[BettingWindow]) -> list[tuple[str, dict[str, Any], str, str]]:
+async def parse_bulk_result_payloads(request: Request, windows: list[BettingWindow]) -> tuple[list[tuple[str, dict[str, Any], str, str]], list[str]]:
     form = await request.form()
     payloads: list[tuple[str, dict[str, Any], str, str]] = []
+    skipped_labels: list[str] = []
     for window in windows:
         if window.bet_type not in {"series", "play_in"}:
             continue
@@ -817,22 +917,25 @@ async def parse_bulk_result_payloads(request: Request, windows: list[BettingWind
             if not is_marked:
                 continue
             if not winner:
-                raise HTTPException(status_code=400, detail=f"Choose a winner before saving {series_key}.")
+                skipped_labels.append(_series_display_name(series))
+                continue
             payload: dict[str, Any]
             if window.bet_type == "play_in":
                 payload = {"winner": winner, "exact_result": "1-0"}
             else:
                 if not games_count_raw:
-                    raise HTTPException(status_code=400, detail=f"Choose total games before saving {series_key}.")
+                    skipped_labels.append(_series_display_name(series))
+                    continue
                 try:
                     games_count = max(4, min(7, int(games_count_raw)))
-                except ValueError as exc:
-                    raise HTTPException(status_code=400, detail=f"Total games must be between 4 and 7 for {series_key}.") from exc
+                except ValueError:
+                    skipped_labels.append(_series_display_name(series))
+                    continue
                 payload = {"winner": winner, "exact_result": f"4-{games_count - 4}"}
             if display_score:
                 payload["display_score"] = display_score
             payloads.append((series_key, payload, source, override_reason))
-    return payloads
+    return payloads, skipped_labels
 
 
 def _delete_membership(session: Session, membership: Membership) -> None:
@@ -915,6 +1018,7 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
         render_series = []
         for series in window.config.get("series", []):
             resolved_teams, labels = _series_display_meta(series, result_payloads)
+            slots = series.get("slots") or [{"type": "team", "team": team} for team in series.get("teams", [])]
             teams = resolved_teams if len(resolved_teams) == 2 else [str(team).upper() for team in series.get("teams", [])]
             if len(teams) < 2:
                 teams = teams + ["TBD"] * (2 - len(teams))
@@ -922,7 +1026,16 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
             for index in range(2):
                 team = teams[index] if index < len(teams) else "TBD"
                 label = labels[index] if index < len(labels) else team_name(team)
-                team_details.append({"abbr": team if team != "TBD" else "TBD", "name": label, "logo": team_logo(team if team != "TBD" else None)})
+                slot = slots[index] if index < len(slots) else {"type": "team", "team": team}
+                seed_text = _slot_seed_text(slot) or _series_key_seed_text(str(series.get("series_key") or ""), index)
+                team_details.append(
+                    {
+                        "abbr": team if team != "TBD" else "TBD",
+                        "name": label,
+                        "logo": team_logo(team if team != "TBD" else None),
+                        "seed_text": seed_text,
+                    }
+                )
             render_series.append(
                 {
                     **series,
@@ -971,6 +1084,7 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
         "leader_row": leader_row,
         "leader_message": leader_message,
         "bracket_sections": _build_bracket_sections(windows, results),
+        "bracket_board": _build_bracket_board(windows, results),
         "tie_break_rules": [
             "Most exact series results predicted correctly",
             "Correct Finals MVP pick",
@@ -1085,8 +1199,38 @@ def _generate_bracket_windows(pool_id: str, east_seeds: list[str], west_seeds: l
         conference_finals_open = opens_at + timedelta(days=32)
         windows.extend(
             [
-                _create_series_window(pool_id, "play_in", "play_in", f"{conference} Play-In: {team_name(seeds[6])} vs {team_name(seeds[7])}", play_in_open, locks_at, f"play_in-{slug}-7v8", teams=[seeds[6], seeds[7]], conference=conference, label=f"{conference} 7 vs 8"),
-                _create_series_window(pool_id, "play_in", "play_in", f"{conference} Play-In: {team_name(seeds[8])} vs {team_name(seeds[9])}", play_in_open, locks_at, f"play_in-{slug}-9v10", teams=[seeds[8], seeds[9]], conference=conference, label=f"{conference} 9 vs 10"),
+                _create_series_window(
+                    pool_id,
+                    "play_in",
+                    "play_in",
+                    f"{conference} Play-In: {team_name(seeds[6])} vs {team_name(seeds[7])}",
+                    play_in_open,
+                    locks_at,
+                    f"play_in-{slug}-7v8",
+                    teams=[seeds[6], seeds[7]],
+                    conference=conference,
+                    label=f"{conference} 7 vs 8",
+                    slots=[
+                        {"type": "seed", "conference": conference, "seed": 7, "team": seeds[6]},
+                        {"type": "seed", "conference": conference, "seed": 8, "team": seeds[7]},
+                    ],
+                ),
+                _create_series_window(
+                    pool_id,
+                    "play_in",
+                    "play_in",
+                    f"{conference} Play-In: {team_name(seeds[8])} vs {team_name(seeds[9])}",
+                    play_in_open,
+                    locks_at,
+                    f"play_in-{slug}-9v10",
+                    teams=[seeds[8], seeds[9]],
+                    conference=conference,
+                    label=f"{conference} 9 vs 10",
+                    slots=[
+                        {"type": "seed", "conference": conference, "seed": 9, "team": seeds[8]},
+                        {"type": "seed", "conference": conference, "seed": 10, "team": seeds[9]},
+                    ],
+                ),
                 _create_series_window(
                     pool_id,
                     "play_in",
@@ -1107,10 +1251,10 @@ def _generate_bracket_windows(pool_id: str, east_seeds: list[str], west_seeds: l
         )
         windows.extend(
             [
-                _create_series_window(pool_id, "round_1", "series", f"{conference} Round 1: {team_name(seeds[0])} vs {conference} #8", round_one_open, round_one_open + timedelta(days=1), f"round_1-{slug}-1v8", teams=[seeds[0], "TBD"], conference=conference, label=f"{conference} 1 vs 8", slots=[{"type": "seed", "conference": conference, "seed": 1, "team": seeds[0]}, {"type": "winner_of", "series_key": f"play_in-{slug}-8seed"}]),
-                _create_series_window(pool_id, "round_1", "series", f"{conference} Round 1: {team_name(seeds[1])} vs {conference} #7", round_one_open, round_one_open + timedelta(days=1), f"round_1-{slug}-2v7", teams=[seeds[1], "TBD"], conference=conference, label=f"{conference} 2 vs 7", slots=[{"type": "seed", "conference": conference, "seed": 2, "team": seeds[1]}, {"type": "winner_of", "series_key": f"play_in-{slug}-7v8"}]),
-                _create_series_window(pool_id, "round_1", "series", generated_window_name("round_1", seeds[2], seeds[5]), round_one_open, round_one_open + timedelta(days=1), f"round_1-{slug}-3v6", teams=[seeds[2], seeds[5]], conference=conference, label=f"{conference} 3 vs 6"),
-                _create_series_window(pool_id, "round_1", "series", generated_window_name("round_1", seeds[3], seeds[4]), round_one_open, round_one_open + timedelta(days=1), f"round_1-{slug}-4v5", teams=[seeds[3], seeds[4]], conference=conference, label=f"{conference} 4 vs 5"),
+                _create_series_window(pool_id, "round_1", "series", f"{conference} Round 1: {team_name(seeds[0])} vs {conference} #8", round_one_open, round_one_open + timedelta(days=1), f"round_1-{slug}-1v8", teams=[seeds[0], "TBD"], conference=conference, label=f"{conference} 1 vs 8", slots=[{"type": "seed", "conference": conference, "seed": 1, "team": seeds[0]}, {"type": "play_in_seed", "conference": conference, "seed": 8, "series_key": f"play_in-{slug}-8seed"}]),
+                _create_series_window(pool_id, "round_1", "series", f"{conference} Round 1: {team_name(seeds[1])} vs {conference} #7", round_one_open, round_one_open + timedelta(days=1), f"round_1-{slug}-2v7", teams=[seeds[1], "TBD"], conference=conference, label=f"{conference} 2 vs 7", slots=[{"type": "seed", "conference": conference, "seed": 2, "team": seeds[1]}, {"type": "play_in_seed", "conference": conference, "seed": 7, "series_key": f"play_in-{slug}-7v8"}]),
+                _create_series_window(pool_id, "round_1", "series", generated_window_name("round_1", seeds[2], seeds[5]), round_one_open, round_one_open + timedelta(days=1), f"round_1-{slug}-3v6", teams=[seeds[2], seeds[5]], conference=conference, label=f"{conference} 3 vs 6", slots=[{"type": "seed", "conference": conference, "seed": 3, "team": seeds[2]}, {"type": "seed", "conference": conference, "seed": 6, "team": seeds[5]}]),
+                _create_series_window(pool_id, "round_1", "series", generated_window_name("round_1", seeds[3], seeds[4]), round_one_open, round_one_open + timedelta(days=1), f"round_1-{slug}-4v5", teams=[seeds[3], seeds[4]], conference=conference, label=f"{conference} 4 vs 5", slots=[{"type": "seed", "conference": conference, "seed": 4, "team": seeds[3]}, {"type": "seed", "conference": conference, "seed": 5, "team": seeds[4]}]),
             ]
         )
         windows.extend(
@@ -1501,10 +1645,15 @@ async def submit_all_picks(
     membership = require_membership(request, session, pool_id)
     windows = load_pool_context(session, pool_id)["windows"]
     try:
-        submissions_to_save = await parse_bulk_submission_payloads(request, windows)
+        submissions_to_save, skipped_labels = await parse_bulk_submission_payloads(request, windows)
     except HTTPException as exc:
         return RedirectResponse(url=redirect_with_message(pool_id, "overview", "error", str(exc.detail)), status_code=303)
     if not submissions_to_save:
+        if skipped_labels:
+            return RedirectResponse(
+                url=redirect_with_message(pool_id, "overview", "error", f"No complete picks were saved. Finish {skipped_labels[0]} first."),
+                status_code=303,
+            )
         return RedirectResponse(url=redirect_with_message(pool_id, "overview", "error", "Mark at least one pick before saving."), status_code=303)
 
     saved_count = 0
@@ -1518,8 +1667,11 @@ async def submit_all_picks(
         session.add(EventLog(pool_id=pool_id, actor_member_id=membership.id, event_type="picks_submitted", payload={"window_id": window.id, "bulk": True}))
         saved_count += 1
     session.commit()
+    message = f"Saved {saved_count} marked pick board(s)."
+    if skipped_labels:
+        message += f" Skipped {len(skipped_labels)} incomplete board(s)."
     return RedirectResponse(
-        url=redirect_with_message(pool_id, "overview", "success", f"Saved {saved_count} marked pick board(s)."),
+        url=redirect_with_message(pool_id, "overview", "success", message),
         status_code=303,
     )
 
@@ -1702,10 +1854,15 @@ async def post_result(
         return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "success", "Saved 1 marked result."), status_code=303)
     context = load_pool_context(session, pool_id)
     try:
-        result_payloads = await parse_bulk_result_payloads(request, context["windows"])
+        result_payloads, skipped_labels = await parse_bulk_result_payloads(request, context["windows"])
     except HTTPException as exc:
         return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "error", str(exc.detail)), status_code=303)
     if not result_payloads:
+        if skipped_labels:
+            return RedirectResponse(
+                url=redirect_with_message(pool_id, "commissioner", "error", f"No complete results were saved. Finish {skipped_labels[0]} first."),
+                status_code=303,
+            )
         return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "error", "Mark at least one result before saving."), status_code=303)
     for scope_key, payload, source, override_reason in result_payloads:
         session.add(
@@ -1724,8 +1881,11 @@ async def post_result(
     session.flush()
     _materialize_resolved_windows(session, pool_id)
     session.commit()
+    message = f"Saved {len(result_payloads)} marked result(s)."
+    if skipped_labels:
+        message += f" Skipped {len(skipped_labels)} incomplete board(s)."
     return RedirectResponse(
-        url=redirect_with_message(pool_id, "commissioner", "success", f"Saved {len(result_payloads)} marked result(s)."),
+        url=redirect_with_message(pool_id, "commissioner", "success", message),
         status_code=303,
     )
 

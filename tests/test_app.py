@@ -17,7 +17,7 @@ os.environ["SCHEDULER_ENABLED"] = "false"
 
 from app.data.nba_catalog import TEAM_BY_CODE, players_for_teams, teams_by_conference  # noqa: E402
 from app.db import SessionLocal, init_db  # noqa: E402
-from app.main import app, load_pool_context  # noqa: E402
+from app.main import app, load_pool_context, team_logo  # noqa: E402
 from app.models import BettingWindow, Membership, PickSubmission, ResultSnapshot, User  # noqa: E402
 
 
@@ -234,6 +234,11 @@ def test_create_pool_join_and_export_bundle() -> None:
     assert "fallback_workbook.xlsx" in names
     snapshot = json.loads(archive.read("snapshot.json").decode("utf-8"))
     assert snapshot["pool"]["name"] == "Integration Pool"
+
+
+def test_team_logo_uses_utah_slug_override() -> None:
+    assert team_logo("UTA").endswith("/utah.png")
+    assert team_logo("BOS").endswith("/bos.png")
 
 
 def test_team_and_player_dropdowns_cover_catalog() -> None:
@@ -761,6 +766,10 @@ def test_generate_bracket_and_hide_result_feed_from_players() -> None:
     assert bracket_page.status_code == 200
     assert "East Play-In" in bracket_page.text
     assert "West Semifinals" in bracket_page.text
+    assert "7th" in bracket_page.text
+    assert "8 seed" in bracket_page.text
+    assert "3rd" in bracket_page.text
+    assert "6th" in bracket_page.text
 
     player_page = player_client.get(f"{pool_url}?tab=overview")
     assert player_page.status_code == 200
@@ -1097,6 +1106,61 @@ def test_bulk_result_save_persists_multiple_marked_games_and_saved_badges() -> N
     assert_result_exists(pool_id, "round_1-BOS-NYK")
     assert "111-104" in save_response.text
     assert "Saved result: Boston won 4-2" in save_response.text
+
+
+def test_bulk_player_save_persists_valid_games_and_skips_incomplete_ones() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Bulk Player Picks Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    player_client.post(f"/invite/{invite_token}", data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"}, follow_redirects=False)
+
+    for team_one, team_two in [("BOS", "NYK"), ("CLE", "ORL")]:
+        response = commissioner_client.post(
+            f"{pool_url}/windows",
+            data={
+                "name": "",
+                "round_key": "round_1",
+                "bet_type": "series",
+                "opens_at": "2026-04-14T12:00",
+                "locks_at": "2026-04-18T19:00",
+                "team_one": team_one,
+                "team_two": team_two,
+                "series_key": "",
+                "next_tab": "overview",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+    save_response = player_client.post(
+        f"{pool_url}/submit-all",
+        data={
+            "winner_round_1-BOS-NYK": "BOS",
+            "games_count_round_1-BOS-NYK": "6",
+            "games_count_round_1-CLE-ORL": "7",
+        },
+        follow_redirects=True,
+    )
+    assert save_response.status_code == 200
+    assert "Saved 1 marked pick board(s)." in save_response.text
+    assert "Skipped 1 incomplete board(s)." in save_response.text
+    assert "Cleveland Cavaliers vs Orlando Magic" in save_response.text
+
+    with SessionLocal() as session:
+        membership = session.scalar(
+            select(Membership).join(User, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.nickname == "Avi")
+        )
+        assert membership is not None
+        saved_submission = session.scalar(
+            select(PickSubmission).where(
+                PickSubmission.member_id == membership.id,
+                PickSubmission.window_id == find_window_by_name(pool_id, "Round 1: Boston Celtics vs New York Knicks").id,
+            )
+        )
+        assert saved_submission is not None
 
 
 def test_commissioner_can_manage_members_and_delete_pool() -> None:

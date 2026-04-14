@@ -27,7 +27,7 @@
         </div>
         <div class="flex flex-wrap gap-3">
           {% if invite %}
-            <a href="/invite/{{ invite.token }}" class="pill-link">Invite friends</a>
+            <a href="/invite/{{ invite.token }}" class="pill-link">Register To Pool</a>
           {% endif %}
           {% if is_commissioner %}
             <a href="/pools/{{ pool.id }}/export" class="pill-link pill-link--secondary">Download backup bundle</a>
@@ -133,7 +133,12 @@
             <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div>
                 <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">{{ window.round_key.replace("_", " ") }}</p>
-                <h3 class="mt-1 text-xl font-bold text-slate-900">{{ window.name }}</h3>
+                {% if window.bet_type != "early" and window.render_series|length == 1 and window.render_series[0].resolved %}
+                  <h3 class="mt-1 text-xl font-bold text-slate-900">{{ window.render_series[0].team_details[0].name }} vs {{ window.render_series[0].team_details[1].name }}</h3>
+                  <p class="mt-1 text-sm font-semibold text-slate-500">{{ window.name }}</p>
+                {% else %}
+                  <h3 class="mt-1 text-xl font-bold text-slate-900">{{ window.name }}</h3>
+                {% endif %}
                 <p class="mt-1 text-sm leading-6 text-slate-500">Opens {{ window.opens_at }} • Locks {{ window.locks_at }}</p>
               </div>
               <div class="flex flex-wrap gap-2">
@@ -452,25 +457,197 @@
         <h3 class="mt-2 text-2xl font-bold text-slate-900">Play-In and playoff path</h3>
         <p class="mt-3 text-sm leading-6 text-slate-600">{{ play_in_explanation }}</p>
       </div>
-      {% for section in bracket_sections %}
-        <div class="card-surface">
-          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">{{ section.title }}</p>
-          <div class="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {% for matchup in section.matchups %}
-              <article class="series-shell">
-                <p class="prediction-title">{{ matchup.title }}</p>
-                <div class="mt-4 space-y-2 text-sm text-slate-700">
-                  <div>{{ matchup.teams[0] }}</div>
-                  <div>{{ matchup.teams[1] }}</div>
+      {% if bracket_board.west_play_in or bracket_board.east_play_in or bracket_board.west_round_1 or bracket_board.east_round_1 %}
+        <div class="bracket-bleed">
+        <div class="bracket-board">
+          <div class="bracket-board__grid">
+            <aside class="bracket-side bracket-side--west">
+              <p class="bracket-column-title">West Play-In</p>
+              <div class="bracket-stack">
+                {% for matchup in bracket_board.west_play_in %}
+                  <article class="bracket-series">
+                    <p class="bracket-series__label">{{ matchup.label }}</p>
+                    {% for team in matchup.team_details %}
+                      <div class="bracket-team-row">
+                        <div class="bracket-team-row__seed">{{ team.seed_text or team.abbr }}</div>
+                        <img src="{{ team.logo }}" alt="{{ team.name }} logo" />
+                        <div class="bracket-team-row__meta">
+                          <div class="bracket-team-row__name">{{ team.name }}</div>
+                          <div class="bracket-team-row__abbr">{{ team.abbr }}</div>
+                        </div>
+                      </div>
+                    {% endfor %}
+                    <p class="bracket-winner">Winner: {{ matchup.winner or matchup.result_summary }}</p>
+                  </article>
+                {% endfor %}
+              </div>
+            </aside>
+
+            <section class="bracket-center">
+              <div class="text-center">
+                <p class="bracket-subtitle">NBA postseason path</p>
+                <h2 class="bracket-title">Playoffs</h2>
+              </div>
+
+              <div class="mt-8 space-y-8">
+                <div>
+                  <p class="bracket-column-title">First Round</p>
+                  <div class="bracket-round-grid">
+                    <div class="bracket-stack">
+                      <p class="bracket-column-title">West First Round</p>
+                      {% for matchup in bracket_board.west_round_1 %}
+                        <article class="bracket-series">
+                          <p class="bracket-series__label">West</p>
+                          {% for team in matchup.team_details %}
+                            <div class="bracket-team-row">
+                              <div class="bracket-team-row__seed">{{ team.seed_text or team.abbr }}</div>
+                              <img src="{{ team.logo }}" alt="{{ team.name }} logo" />
+                              <div class="bracket-team-row__meta">
+                                <div class="bracket-team-row__name">{{ team.name }}</div>
+                                <div class="bracket-team-row__abbr">{{ team.abbr }}</div>
+                              </div>
+                            </div>
+                          {% endfor %}
+                          <p class="bracket-winner">{{ matchup.result_summary }}</p>
+                        </article>
+                      {% endfor %}
+                    </div>
+                    <div class="bracket-stack">
+                      <p class="bracket-column-title">East First Round</p>
+                      {% for matchup in bracket_board.east_round_1 %}
+                        <article class="bracket-series">
+                          <p class="bracket-series__label">East</p>
+                          {% for team in matchup.team_details %}
+                            <div class="bracket-team-row">
+                              <div class="bracket-team-row__seed">{{ team.seed_text or team.abbr }}</div>
+                              <img src="{{ team.logo }}" alt="{{ team.name }} logo" />
+                              <div class="bracket-team-row__meta">
+                                <div class="bracket-team-row__name">{{ team.name }}</div>
+                                <div class="bracket-team-row__abbr">{{ team.abbr }}</div>
+                              </div>
+                            </div>
+                          {% endfor %}
+                          <p class="bracket-winner">{{ matchup.result_summary }}</p>
+                        </article>
+                      {% endfor %}
+                    </div>
+                  </div>
                 </div>
-                <p class="mt-4 text-sm font-semibold text-slate-500">Winner: {{ matchup.winner or "TBD" }}</p>
-              </article>
-            {% endfor %}
+
+                <div>
+                  <p class="bracket-column-title">Conference Semifinals</p>
+                  <div class="bracket-round-grid">
+                    <div class="bracket-stack">
+                      <p class="bracket-column-title">West Semifinals</p>
+                      {% for matchup in bracket_board.west_round_2 %}
+                        <article class="bracket-series">
+                          <p class="bracket-series__label">West</p>
+                          {% for team in matchup.team_details %}
+                            <div class="bracket-team-row">
+                              <div class="bracket-team-row__seed">{{ team.seed_text or team.abbr }}</div>
+                              <img src="{{ team.logo }}" alt="{{ team.name }} logo" />
+                              <div class="bracket-team-row__meta">
+                                <div class="bracket-team-row__name">{{ team.name }}</div>
+                                <div class="bracket-team-row__abbr">{{ team.abbr }}</div>
+                              </div>
+                            </div>
+                          {% endfor %}
+                          <p class="bracket-winner">{{ matchup.result_summary }}</p>
+                        </article>
+                      {% endfor %}
+                    </div>
+                    <div class="bracket-stack">
+                      <p class="bracket-column-title">East Semifinals</p>
+                      {% for matchup in bracket_board.east_round_2 %}
+                        <article class="bracket-series">
+                          <p class="bracket-series__label">East</p>
+                          {% for team in matchup.team_details %}
+                            <div class="bracket-team-row">
+                              <div class="bracket-team-row__seed">{{ team.seed_text or team.abbr }}</div>
+                              <img src="{{ team.logo }}" alt="{{ team.name }} logo" />
+                              <div class="bracket-team-row__meta">
+                                <div class="bracket-team-row__name">{{ team.name }}</div>
+                                <div class="bracket-team-row__abbr">{{ team.abbr }}</div>
+                              </div>
+                            </div>
+                          {% endfor %}
+                          <p class="bracket-winner">{{ matchup.result_summary }}</p>
+                        </article>
+                      {% endfor %}
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <p class="bracket-column-title">Conference Finals</p>
+                  <div class="bracket-round-grid">
+                    {% for matchup in bracket_board.conference_finals %}
+                      <article class="bracket-series">
+                        <p class="bracket-series__label">{{ (matchup.conference or "Conference") ~ " Conference Finals" }}</p>
+                        {% for team in matchup.team_details %}
+                          <div class="bracket-team-row">
+                            <div class="bracket-team-row__seed">{{ team.seed_text or team.abbr }}</div>
+                            <img src="{{ team.logo }}" alt="{{ team.name }} logo" />
+                            <div class="bracket-team-row__meta">
+                              <div class="bracket-team-row__name">{{ team.name }}</div>
+                              <div class="bracket-team-row__abbr">{{ team.abbr }}</div>
+                            </div>
+                          </div>
+                        {% endfor %}
+                        <p class="bracket-winner">{{ matchup.result_summary }}</p>
+                      </article>
+                    {% endfor %}
+                  </div>
+                </div>
+
+                <div>
+                  <p class="bracket-column-title">NBA Finals</p>
+                  {% for matchup in bracket_board.finals %}
+                    <article class="bracket-series">
+                      {% for team in matchup.team_details %}
+                        <div class="bracket-team-row">
+                          <div class="bracket-team-row__seed">{{ team.seed_text or team.abbr }}</div>
+                          <img src="{{ team.logo }}" alt="{{ team.name }} logo" />
+                          <div class="bracket-team-row__meta">
+                            <div class="bracket-team-row__name">{{ team.name }}</div>
+                            <div class="bracket-team-row__abbr">{{ team.abbr }}</div>
+                          </div>
+                        </div>
+                      {% endfor %}
+                      <p class="bracket-winner">{{ matchup.result_summary }}</p>
+                    </article>
+                  {% endfor %}
+                </div>
+              </div>
+            </section>
+
+            <aside class="bracket-side bracket-side--east">
+              <p class="bracket-column-title">East Play-In</p>
+              <div class="bracket-stack">
+                {% for matchup in bracket_board.east_play_in %}
+                  <article class="bracket-series">
+                    <p class="bracket-series__label">{{ matchup.label }}</p>
+                    {% for team in matchup.team_details %}
+                      <div class="bracket-team-row">
+                        <div class="bracket-team-row__seed">{{ team.seed_text or team.abbr }}</div>
+                        <img src="{{ team.logo }}" alt="{{ team.name }} logo" />
+                        <div class="bracket-team-row__meta">
+                          <div class="bracket-team-row__name">{{ team.name }}</div>
+                          <div class="bracket-team-row__abbr">{{ team.abbr }}</div>
+                        </div>
+                      </div>
+                    {% endfor %}
+                    <p class="bracket-winner">Winner: {{ matchup.winner or matchup.result_summary }}</p>
+                  </article>
+                {% endfor %}
+              </div>
+            </aside>
           </div>
+        </div>
         </div>
       {% else %}
         <div class="card-surface text-slate-500">Generate the seeded bracket from the Commissioner tab to see the Play-In, First Round, and Second Round structure.</div>
-      {% endfor %}
+      {% endif %}
     </section>
   {% else %}
     <section class="space-y-6">
