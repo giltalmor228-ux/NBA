@@ -75,9 +75,11 @@
   </nav>
 
   {% if active_tab == "overview" %}
-    <section class="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-      <div class="space-y-6">
-        <div class="card-surface">
+    <section class="space-y-6">
+      {% if current_membership %}
+        <form id="player-picks-form" action="/pools/{{ pool.id }}/submit-all" method="post"></form>
+      {% endif %}
+      <div class="card-surface">
           <div class="flex items-center justify-between gap-4">
             <div>
               <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Leaderboard</p>
@@ -122,177 +124,176 @@
               </article>
             {% endfor %}
           </div>
-        </div>
+      </div>
 
-        <div class="space-y-5">
-          {% for window in windows %}
-            {% set current_state = window_submission_states.get(window.id, {}).get(current_membership.id, {}) if current_membership else {} %}
-            <article class="card-surface">
-              <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">{{ window.round_key.replace("_", " ") }}</p>
-                  <h3 class="mt-2 text-2xl font-bold text-slate-900">{{ window.name }}</h3>
-                  <p class="mt-2 text-sm leading-6 text-slate-500">Opens {{ window.opens_at }} • Locks {{ window.locks_at }}</p>
-                </div>
-                <div class="flex flex-wrap gap-2">
-                  <span class="status-pill {% if window.is_locked %}status-pill--locked{% else %}status-pill--open{% endif %}">
-                    {{ "Locked" if window.is_locked else "Open now" }}
-                  </span>
-                  {% if is_commissioner %}
-                    {% if window.is_locked %}
-                      <form action="/pools/{{ pool.id }}/windows/{{ window.id }}/unlock" method="post">
-                        <button class="secondary-action">Reopen</button>
-                      </form>
-                    {% else %}
-                      <form action="/pools/{{ pool.id }}/windows/{{ window.id }}/lock" method="post">
-                        <button class="secondary-action">Lock</button>
-                      </form>
-                    {% endif %}
-                  {% endif %}
-                </div>
+      <div class="grid gap-4 2xl:grid-cols-2">
+        {% for window in windows %}
+          {% set current_state = window_submission_states.get(window.id, {}).get(current_membership.id, {}) if current_membership else {} %}
+          <article class="card-surface">
+            <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">{{ window.round_key.replace("_", " ") }}</p>
+                <h3 class="mt-1 text-xl font-bold text-slate-900">{{ window.name }}</h3>
+                <p class="mt-1 text-sm leading-6 text-slate-500">Opens {{ window.opens_at }} • Locks {{ window.locks_at }}</p>
               </div>
+              <div class="flex flex-wrap gap-2">
+                <span class="status-pill {% if window.is_locked %}status-pill--locked{% else %}status-pill--open{% endif %}">
+                  {{ "Locked" if window.is_locked else "Open now" }}
+                </span>
+                {% if is_commissioner %}
+                  {% if window.is_locked %}
+                    <form action="/pools/{{ pool.id }}/windows/{{ window.id }}/unlock" method="post">
+                      <button class="secondary-action">Reopen</button>
+                    </form>
+                  {% else %}
+                    <form action="/pools/{{ pool.id }}/windows/{{ window.id }}/lock" method="post">
+                      <button class="secondary-action">Lock</button>
+                    </form>
+                  {% endif %}
+                {% endif %}
+              </div>
+            </div>
 
-              {% if window.bet_type == "early" %}
-                <form action="/pools/{{ pool.id }}/windows/{{ window.id }}/submit" method="post" class="mt-6 grid gap-5" data-finals-scope="player-{{ window.id }}">
-                  {% if current_state.get("champion") %}
-                    <div class="rounded-[1.25rem] bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">You already bet this board. You can still update it until the lock time.</div>
-                  {% endif %}
-                  <div class="grid gap-4 md:grid-cols-2">
-                    <div class="prediction-card">
-                      <p class="prediction-title">East path</p>
-                      <label class="field-label">Conference finalist</label>
-                      <select name="conference_finalists_east" class="friendly-select" {% if window.is_locked %}disabled{% endif %} required>
-                        <option value="">Choose a team</option>
-                        {% for option in window.config.get("conference_finalist_options", {}).get("East", []) %}
-                          <option value="{{ option }}" {% if current_state.get("conference_finalists", {}).get("East") == option %}selected{% endif %}>{{ team_name(option) }}</option>
-                        {% endfor %}
-                      </select>
-                      <label class="field-label mt-4">NBA finalist</label>
-                      <select name="nba_finalists_east" class="friendly-select" data-east-finalist {% if window.is_locked %}disabled{% endif %} required>
-                        <option value="">Choose a team</option>
-                        {% for option in window.config.get("nba_finalist_options", {}).get("East", []) %}
-                          <option value="{{ option }}" {% if current_state.get("nba_finalists", {}).get("East") == option %}selected{% endif %}>{{ team_name(option) }}</option>
-                        {% endfor %}
-                      </select>
-                    </div>
-                    <div class="prediction-card">
-                      <p class="prediction-title">West path</p>
-                      <label class="field-label">Conference finalist</label>
-                      <select name="conference_finalists_west" class="friendly-select" {% if window.is_locked %}disabled{% endif %} required>
-                        <option value="">Choose a team</option>
-                        {% for option in window.config.get("conference_finalist_options", {}).get("West", []) %}
-                          <option value="{{ option }}" {% if current_state.get("conference_finalists", {}).get("West") == option %}selected{% endif %}>{{ team_name(option) }}</option>
-                        {% endfor %}
-                      </select>
-                      <label class="field-label mt-4">NBA finalist</label>
-                      <select name="nba_finalists_west" class="friendly-select" data-west-finalist {% if window.is_locked %}disabled{% endif %} required>
-                        <option value="">Choose a team</option>
-                        {% for option in window.config.get("nba_finalist_options", {}).get("West", []) %}
-                          <option value="{{ option }}" {% if current_state.get("nba_finalists", {}).get("West") == option %}selected{% endif %}>{{ team_name(option) }}</option>
-                        {% endfor %}
-                      </select>
-                    </div>
+            {% if window.bet_type == "early" %}
+              <div class="mt-4 grid gap-4" data-finals-scope="player-{{ window.id }}">
+                {% if current_state.get("champion") %}
+                  <div class="rounded-[1.25rem] bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">You already bet this board. You can still update it until the lock time.</div>
+                {% endif %}
+                <div class="grid gap-3 xl:grid-cols-[1fr_1fr]">
+                  <div class="prediction-card">
+                    <p class="prediction-title">East path</p>
+                    <label class="field-label">Conference finalist</label>
+                    <select name="conference_finalists_east" form="player-picks-form" class="friendly-select" {% if window.is_locked %}disabled{% endif %}>
+                      <option value="">Choose a team</option>
+                      {% for option in window.config.get("conference_finalist_options", {}).get("East", []) %}
+                        <option value="{{ option }}" {% if current_state.get("conference_finalists", {}).get("East") == option %}selected{% endif %}>{{ team_name(option) }}</option>
+                      {% endfor %}
+                    </select>
+                    <label class="field-label mt-4">NBA finalist</label>
+                    <select name="nba_finalists_east" form="player-picks-form" class="friendly-select" data-east-finalist {% if window.is_locked %}disabled{% endif %}>
+                      <option value="">Choose a team</option>
+                      {% for option in window.config.get("nba_finalist_options", {}).get("East", []) %}
+                        <option value="{{ option }}" {% if current_state.get("nba_finalists", {}).get("East") == option %}selected{% endif %}>{{ team_name(option) }}</option>
+                      {% endfor %}
+                    </select>
                   </div>
-                  <div class="grid gap-4 md:grid-cols-2">
-                    <div class="prediction-card">
-                      <p class="prediction-title">Champion</p>
-                      <select name="champion" class="friendly-select" {% if window.is_locked %}disabled{% endif %} required>
-                        <option value="">Choose champion</option>
-                        {% for conference, teams in team_select_groups %}
-                          <optgroup label="{{ conference }} Conference">
-                            {% for team in teams %}
-                              {% if team.code in window.config.get("champion_options", []) %}
-                                <option value="{{ team.code }}" {% if current_state.get("champion") == team.code %}selected{% endif %}>{{ team.name }}</option>
-                              {% endif %}
-                            {% endfor %}
-                          </optgroup>
-                        {% endfor %}
-                      </select>
-                    </div>
-                    <div class="prediction-card">
-                      <p class="prediction-title">Finals MVP</p>
-                      <select name="finals_mvp" class="friendly-select" data-finals-mvp data-selected="{{ current_state.get('finals_mvp', '') }}" {% if window.is_locked %}disabled{% endif %} required>
-                        <option value="">Choose Finals MVP</option>
-                      </select>
-                    </div>
+                  <div class="prediction-card">
+                    <p class="prediction-title">West path</p>
+                    <label class="field-label">Conference finalist</label>
+                    <select name="conference_finalists_west" form="player-picks-form" class="friendly-select" {% if window.is_locked %}disabled{% endif %}>
+                      <option value="">Choose a team</option>
+                      {% for option in window.config.get("conference_finalist_options", {}).get("West", []) %}
+                        <option value="{{ option }}" {% if current_state.get("conference_finalists", {}).get("West") == option %}selected{% endif %}>{{ team_name(option) }}</option>
+                      {% endfor %}
+                    </select>
+                    <label class="field-label mt-4">NBA finalist</label>
+                    <select name="nba_finalists_west" form="player-picks-form" class="friendly-select" data-west-finalist {% if window.is_locked %}disabled{% endif %}>
+                      <option value="">Choose a team</option>
+                      {% for option in window.config.get("nba_finalist_options", {}).get("West", []) %}
+                        <option value="{{ option }}" {% if current_state.get("nba_finalists", {}).get("West") == option %}selected{% endif %}>{{ team_name(option) }}</option>
+                      {% endfor %}
+                    </select>
                   </div>
-                  {% if current_membership %}
-                    <button class="primary-action" {% if window.is_locked %}disabled{% endif %}>Save early picks</button>
-                  {% endif %}
-                </form>
-              {% else %}
-                <form action="/pools/{{ pool.id }}/windows/{{ window.id }}/submit" method="post" class="mt-6 space-y-6">
-                  {% for series in window.render_series %}
-                    {% set pick_state = current_state.get("series", {}).get(series.series_key, {}) %}
-                    <section class="series-shell">
-                      <div class="series-header">
-                        {% for team in series.team_details %}
-                          <div class="team-pill">
-                            <img src="{{ team.logo }}" alt="{{ team.name }} logo" class="team-logo" />
-                            <div>
-                              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">{{ team.abbr }}</p>
-                              <p class="text-base font-bold text-slate-900">{{ team.name }}</p>
-                            </div>
+                </div>
+                <div class="grid gap-3 xl:grid-cols-[1fr_1fr]">
+                  <div class="prediction-card">
+                    <p class="prediction-title">Champion</p>
+                    <select name="champion" form="player-picks-form" class="friendly-select" {% if window.is_locked %}disabled{% endif %}>
+                      <option value="">Choose champion</option>
+                      {% for conference, teams in team_select_groups %}
+                        <optgroup label="{{ conference }} Conference">
+                          {% for team in teams %}
+                            {% if team.code in window.config.get("champion_options", []) %}
+                              <option value="{{ team.code }}" {% if current_state.get("champion") == team.code %}selected{% endif %}>{{ team.name }}</option>
+                            {% endif %}
+                          {% endfor %}
+                        </optgroup>
+                      {% endfor %}
+                    </select>
+                  </div>
+                  <div class="prediction-card">
+                    <p class="prediction-title">Finals MVP</p>
+                    <select name="finals_mvp" form="player-picks-form" class="friendly-select" data-finals-mvp data-selected="{{ current_state.get('finals_mvp', '') }}" {% if window.is_locked %}disabled{% endif %}>
+                      <option value="">Choose Finals MVP</option>
+                    </select>
+                  </div>
+                </div>
+                {% if current_membership %}
+                  <button class="primary-action" form="player-picks-form" {% if window.is_locked %}disabled{% endif %}>Save marked picks</button>
+                {% endif %}
+              </div>
+            {% else %}
+              <div class="mt-4 space-y-4">
+                {% for series in window.render_series %}
+                  {% set pick_state = current_state.get("series", {}).get(series.series_key, {}) %}
+                  <section class="series-shell">
+                    <div class="series-header">
+                      {% for team in series.team_details %}
+                        <div class="team-pill">
+                          <img src="{{ team.logo }}" alt="{{ team.name }} logo" class="team-logo" />
+                          <div>
+                            <p class="text-xs uppercase tracking-[0.2em] text-slate-500">{{ team.abbr }}</p>
+                            <p class="text-base font-bold text-slate-900">{{ team.name }}</p>
                           </div>
-                        {% endfor %}
-                      </div>
-                      <div class="mt-4 flex flex-wrap items-center gap-3 text-sm text-slate-500">
-                        {% set matchup_row = matchup_lookup.get(series.series_key) %}
-                        <span>Official result: {{ matchup_row.result_summary if matchup_row and matchup_row.result_payload else "Pending" }}</span>
-                        {% if window.is_revealed %}
-                          <a href="/pools/{{ pool.id }}/matchups/{{ series.series_key }}" class="pill-link pill-link--secondary">View pick table</a>
-                        {% endif %}
-                      </div>
-                      {% if not series.resolved %}
-                        <div class="rounded-[1.25rem] bg-[#fff8ef] px-4 py-3 text-sm leading-6 text-slate-500">
-                          This matchup unlocks automatically after the previous game or series determines both teams.
                         </div>
-                      {% else %}
-                        {% if pick_state.get("winner") %}
-                          <div class="rounded-[1.25rem] bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
-                            You already bet this game.
+                      {% endfor %}
+                    </div>
+                    <div class="mt-3 flex flex-wrap items-center gap-3 text-sm text-slate-500">
+                      {% set matchup_row = matchup_lookup.get(series.series_key) %}
+                      <span>Official result: {{ matchup_row.result_summary if matchup_row and matchup_row.result_payload else "Pending" }}</span>
+                      {% if window.is_revealed %}
+                        <a href="/pools/{{ pool.id }}/matchups/{{ series.series_key }}" class="pill-link pill-link--secondary">View pick table</a>
+                      {% endif %}
+                    </div>
+                    {% if not series.resolved %}
+                      <div class="rounded-[1.25rem] bg-[#fff8ef] px-4 py-3 text-sm leading-6 text-slate-500">
+                        This matchup unlocks automatically after the previous game or series determines both teams.
+                      </div>
+                    {% else %}
+                      {% if pick_state.get("winner") %}
+                        <div class="rounded-[1.25rem] bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+                          You already bet this game.
+                        </div>
+                      {% endif %}
+                      <div class="grid gap-3 2xl:grid-cols-[1.15fr_0.85fr]">
+                        <div class="prediction-card">
+                          <p class="prediction-title">{{ "Game winner" if window.bet_type == "play_in" else "Series winner" }}</p>
+                          <div class="choice-grid">
+                            {% for team in series.teams %}
+                              <label class="choice-card">
+                                <input type="radio" name="winner_{{ series.series_key }}" form="player-picks-form" value="{{ team }}" {% if pick_state.get("winner") == team %}checked{% endif %} {% if window.is_locked %}disabled{% endif %} />
+                                <span>{{ team_name(team) }}</span>
+                              </label>
+                            {% endfor %}
                           </div>
-                        {% endif %}
-                        <div class="grid gap-4 xl:grid-cols-2">
+                        </div>
+                        {% if window.bet_type != "play_in" %}
                           <div class="prediction-card">
-                            <p class="prediction-title">{{ "Game winner" if window.bet_type == "play_in" else "Series winner" }}</p>
-                            <div class="choice-grid">
-                              {% for team in series.teams %}
+                            <p class="prediction-title">Total games</p>
+                            <div class="choice-grid choice-grid--compact">
+                              {% for games in [4, 5, 6, 7] %}
                                 <label class="choice-card">
-                                  <input type="radio" name="winner_{{ series.series_key }}" value="{{ team }}" {% if pick_state.get("winner") == team %}checked{% endif %} {% if window.is_locked %}disabled{% endif %} required />
-                                  <span>{{ team_name(team) }}</span>
+                                  <input type="radio" name="games_count_{{ series.series_key }}" form="player-picks-form" value="{{ games }}" {% if pick_state.get("games_count", 5) == games %}checked{% endif %} {% if window.is_locked %}disabled{% endif %} />
+                                  <span>{{ games }} games</span>
                                 </label>
                               {% endfor %}
                             </div>
                           </div>
-                          {% if window.bet_type != "play_in" %}
-                            <div class="prediction-card">
-                              <p class="prediction-title">Total games</p>
-                              <div class="choice-grid choice-grid--compact">
-                                {% for games in [4, 5, 6, 7] %}
-                                  <label class="choice-card">
-                                    <input type="radio" name="games_count_{{ series.series_key }}" value="{{ games }}" {% if pick_state.get("games_count", 5) == games %}checked{% endif %} {% if window.is_locked %}disabled{% endif %} required />
-                                    <span>{{ games }} games</span>
-                                  </label>
-                                {% endfor %}
-                              </div>
-                            </div>
-                          {% endif %}
-                        </div>
-                      {% endif %}
-                    </section>
-                  {% endfor %}
-                  {% if current_membership %}
-                    <button class="primary-action" {% if window.is_locked %}disabled{% endif %}>Save this prediction</button>
-                  {% endif %}
-                </form>
-              {% endif %}
-            </article>
-          {% endfor %}
-        </div>
+                        {% endif %}
+                      </div>
+                    {% endif %}
+                  </section>
+                {% endfor %}
+                {% if current_membership %}
+                  <button class="primary-action" form="player-picks-form" {% if window.is_locked %}disabled{% endif %}>Save marked picks</button>
+                {% endif %}
+              </div>
+            {% endif %}
+          </article>
+        {% endfor %}
       </div>
 
-      <aside class="space-y-6">
+      <div class="grid gap-6 xl:grid-cols-2">
         <section class="card-surface">
           <div>
             <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Tie breaks</p>
@@ -345,7 +346,7 @@
             </div>
           </div>
         </section>
-      </aside>
+      </div>
     </section>
   {% elif active_tab == "bets" %}
     <section class="space-y-6">

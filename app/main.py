@@ -646,6 +646,85 @@ async def parse_submission_payload(request: Request, window: BettingWindow) -> d
     return payload
 
 
+async def parse_bulk_submission_payloads(request: Request, windows: list[BettingWindow]) -> list[tuple[BettingWindow, dict[str, Any]]]:
+    form = await request.form()
+    submissions_to_save: list[tuple[BettingWindow, dict[str, Any]]] = []
+
+    for window in windows:
+        if window.is_locked:
+            continue
+        if window.bet_type == "early":
+            payload = {
+                "conference_finalists": {
+                    "East": str(form.get("conference_finalists_east") or ""),
+                    "West": str(form.get("conference_finalists_west") or ""),
+                },
+                "nba_finalists": {
+                    "East": str(form.get("nba_finalists_east") or ""),
+                    "West": str(form.get("nba_finalists_west") or ""),
+                },
+                "champion": str(form.get("champion") or ""),
+                "finals_mvp": str(form.get("finals_mvp") or ""),
+            }
+            marked = any(
+                [
+                    payload["conference_finalists"]["East"],
+                    payload["conference_finalists"]["West"],
+                    payload["nba_finalists"]["East"],
+                    payload["nba_finalists"]["West"],
+                    payload["champion"],
+                    payload["finals_mvp"],
+                ]
+            )
+            if not marked:
+                continue
+            missing = [
+                label
+                for label, value in [
+                    ("East conference finalist", payload["conference_finalists"]["East"]),
+                    ("West conference finalist", payload["conference_finalists"]["West"]),
+                    ("East NBA finalist", payload["nba_finalists"]["East"]),
+                    ("West NBA finalist", payload["nba_finalists"]["West"]),
+                    ("Champion", payload["champion"]),
+                    ("Finals MVP", payload["finals_mvp"]),
+                ]
+                if not value
+            ]
+            if missing:
+                raise HTTPException(status_code=400, detail=f"Complete every early-pick field before saving. Missing: {', '.join(missing)}.")
+            submissions_to_save.append((window, payload))
+            continue
+
+        payload: dict[str, Any] = {"series": {}}
+        window_marked = False
+        for series in getattr(window, "render_series", []):
+            if not series["resolved"]:
+                continue
+            series_key = series["series_key"]
+            winner = str(form.get(f"winner_{series_key}") or "").strip()
+            games_count_raw = str(form.get(f"games_count_{series_key}") or "").strip()
+            marked = bool(winner or games_count_raw)
+            if not marked:
+                continue
+            window_marked = True
+            if not winner:
+                raise HTTPException(status_code=400, detail=f"Choose a winner before saving {series_key}.")
+            if window.bet_type == "play_in":
+                payload["series"][series_key] = {"winner": winner, "exact_result": "1-0"}
+                continue
+            if not games_count_raw:
+                raise HTTPException(status_code=400, detail=f"Choose total games before saving {series_key}.")
+            try:
+                games_count = max(4, min(7, int(games_count_raw)))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"Total games must be between 4 and 7 for {series_key}.") from exc
+            payload["series"][series_key] = {"winner": winner, "exact_result": f"4-{games_count - 4}"}
+        if window_marked:
+            submissions_to_save.append((window, payload))
+
+    return submissions_to_save
+
+
 async def parse_result_payload(request: Request) -> tuple[str, str, dict[str, Any], str, str]:
     form = await request.form()
     source = str(form.get("source") or "manual")
@@ -778,12 +857,22 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
     memberships = session.scalars(select(Membership).where(Membership.pool_id == pool_id)).all()
     users = {user.id: user for user in session.scalars(select(User).where(User.id.in_([m.user_id for m in memberships]))).all()}
     windows = session.scalars(select(BettingWindow).where(BettingWindow.pool_id == pool_id).order_by(BettingWindow.opens_at)).all()
-    windows = sorted(windows, key=_window_sort_key)
     submissions = session.scalars(
         select(PickSubmission).where(PickSubmission.window_id.in_([window.id for window in windows] or [""]))
     ).all()
     results = session.scalars(select(ResultSnapshot).where(ResultSnapshot.pool_id == pool_id).order_by(ResultSnapshot.created_at)).all()
     result_payloads = latest_result_payloads(results)
+    def window_display_sort_key(window: BettingWindow) -> tuple[int, int, int, datetime, datetime]:
+        if window.bet_type == "early":
+            return (0, 0, 0, window.opens_at, window.created_at)
+        conference = None
+        series_list = window.config.get("series", [])
+        if series_list:
+            conference = series_list[0].get("conference")
+        has_result = any(result_payloads.get(("series", series["series_key"])) for series in series_list)
+        state_group = 2 if has_result else (0 if not window.is_locked else 1)
+        return (1, state_group, _series_priority(window.round_key, conference), window.opens_at, window.created_at)
+    windows = sorted(windows, key=window_display_sort_key)
     invite = session.scalar(select(InviteLink).where(InviteLink.pool_id == pool_id, InviteLink.active.is_(True)))
     leaderboard = score_pool(
         members=[
@@ -1401,6 +1490,38 @@ async def submit_picks(
     session.add(EventLog(pool_id=pool_id, actor_member_id=membership.id, event_type="picks_submitted", payload={"window_id": window_id}))
     session.commit()
     return RedirectResponse(url=redirect_with_message(pool_id, "overview", "success", "Your picks were saved."), status_code=303)
+
+
+@app.post("/pools/{pool_id}/submit-all")
+async def submit_all_picks(
+    pool_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> Response:
+    membership = require_membership(request, session, pool_id)
+    windows = load_pool_context(session, pool_id)["windows"]
+    try:
+        submissions_to_save = await parse_bulk_submission_payloads(request, windows)
+    except HTTPException as exc:
+        return RedirectResponse(url=redirect_with_message(pool_id, "overview", "error", str(exc.detail)), status_code=303)
+    if not submissions_to_save:
+        return RedirectResponse(url=redirect_with_message(pool_id, "overview", "error", "Mark at least one pick before saving."), status_code=303)
+
+    saved_count = 0
+    for window, payload in submissions_to_save:
+        existing = session.scalar(select(PickSubmission).where(PickSubmission.window_id == window.id, PickSubmission.member_id == membership.id))
+        if existing:
+            existing.payload = payload
+            existing.submitted_at = utcnow()
+        else:
+            session.add(PickSubmission(window_id=window.id, member_id=membership.id, payload=payload))
+        session.add(EventLog(pool_id=pool_id, actor_member_id=membership.id, event_type="picks_submitted", payload={"window_id": window.id, "bulk": True}))
+        saved_count += 1
+    session.commit()
+    return RedirectResponse(
+        url=redirect_with_message(pool_id, "overview", "success", f"Saved {saved_count} marked pick board(s)."),
+        status_code=303,
+    )
 
 
 @app.post("/pools/{pool_id}/windows/{window_id}/lock")

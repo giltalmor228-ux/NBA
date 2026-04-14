@@ -371,11 +371,11 @@ def test_save_prediction_redirects_cleanly_after_submit() -> None:
     pool_page = player_client.get(f"{pool_url}?tab=overview")
     assert pool_page.status_code == 200
 
-    submit_actions = re.findall(r'action="([^"]+/submit)"', pool_page.text)
-    assert len(submit_actions) >= 2
+    assert 'action="/pools/' in pool_page.text
+    assert f'action="/pools/{pool_id_from_url(pool_url)}/submit-all"' in pool_page.text
 
     save_response = player_client.post(
-        submit_actions[-1],
+        f"{pool_url}/submit-all",
         data={
             "winner_round_1-BOS-ORL": "BOS",
             "games_count_round_1-BOS-ORL": "6",
@@ -623,13 +623,12 @@ def test_full_five_player_league_flow() -> None:
 
     first_page = commissioner_client.get(f"{pool_url}?tab=overview")
     assert first_page.status_code == 200
-    window_ids = re.findall(r'/windows/([a-f0-9-]+)/submit', first_page.text)
-    assert len(window_ids) >= 5
-
-    early_window_id = window_ids[0]
+    pool_id = pool_id_from_url(pool_url)
+    windows = fetch_windows(pool_id)
+    early_window_id = next(window.id for window in windows if window.bet_type == "early")
     for client, name in zip(all_clients, member_names, strict=False):
         early_submit = client.post(
-            f"{pool_url}/windows/{early_window_id}/submit",
+            f"{pool_url}/submit-all",
             data={
                 "conference_finalists_east": "BOS",
                 "conference_finalists_west": "OKC",
@@ -649,20 +648,17 @@ def test_full_five_player_league_flow() -> None:
         "finals-BOS-OKC",
     ]
     for client, name in zip(all_clients, member_names, strict=False):
-        for series_key, window_id in zip(series_keys, window_ids[1:5], strict=False):
+        payload = {}
+        for series_key in series_keys:
             teams = series_key.split("-")[1:]
             winner = "BOS" if "BOS" in teams else teams[0]
-            submit = client.post(
-                f"{pool_url}/windows/{window_id}/submit",
-                data={
-                    f"winner_{series_key}": winner,
-                    f"games_count_{series_key}": "6",
-                },
-                follow_redirects=False,
-            )
-            assert submit.status_code == 303, (name, series_key)
+            payload[f"winner_{series_key}"] = winner
+            payload[f"games_count_{series_key}"] = "6"
+        submit = client.post(f"{pool_url}/submit-all", data=payload, follow_redirects=False)
+        assert submit.status_code == 303, name
 
-    lock_response = commissioner_client.post(f"{pool_url}/windows/{window_ids[1]}/lock", follow_redirects=False)
+    round_one_window_id = next(window.id for window in windows if any(series.get("series_key") == "round_1-BOS-ORL" for series in window.config.get("series", [])))
+    lock_response = commissioner_client.post(f"{pool_url}/windows/{round_one_window_id}/lock", follow_redirects=False)
     assert lock_response.status_code == 303
 
     pool_page = commissioner_client.get(f"{pool_url}?tab=overview")
@@ -701,12 +697,12 @@ def test_full_five_player_league_flow() -> None:
         )
         assert result_response.status_code == 303, series_key
 
-    final_page = commissioner_client.get(f"{pool_url}?tab=overview")
-    assert final_page.status_code == 200
-    for name in member_names:
-        assert name in final_page.text
-    assert "The Monkey" in final_page.text
-    assert "Save this prediction" in final_page.text
+        final_page = commissioner_client.get(f"{pool_url}?tab=overview")
+        assert final_page.status_code == 200
+        for name in member_names:
+            assert name in final_page.text
+        assert "The Monkey" in final_page.text
+        assert "Save marked picks" in final_page.text
 
 
 def test_monkey_auto_submits_and_sign_out_flow() -> None:
@@ -1194,3 +1190,54 @@ def test_overview_ordering_saved_banners_and_player_missing_picks() -> None:
     assert player_page.status_code == 200
     assert "Boards still waiting on this player" in player_page.text
     assert "Boston Celtics vs New York Knicks" in player_page.text
+
+
+def test_player_can_save_multiple_marked_pick_boards_together() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Bulk Picks Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    player_client.post(f"/invite/{invite_token}", data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"}, follow_redirects=False)
+
+    for round_key, bet_type, team_one, team_two in [("play_in", "play_in", "ATL", "ORL"), ("round_1", "series", "BOS", "NYK")]:
+        commissioner_client.post(
+            f"{pool_url}/windows",
+            data={
+                "name": "",
+                "round_key": round_key,
+                "bet_type": bet_type,
+                "opens_at": "2026-04-14T12:00",
+                "locks_at": "2026-04-18T19:00",
+                "team_one": team_one,
+                "team_two": team_two,
+                "series_key": "",
+                "next_tab": "commissioner",
+            },
+            follow_redirects=False,
+        )
+
+    save_response = player_client.post(
+        f"{pool_url}/submit-all",
+        data={
+            "winner_play_in-ATL-ORL": "ATL",
+            "winner_round_1-BOS-NYK": "BOS",
+            "games_count_round_1-BOS-NYK": "6",
+        },
+        follow_redirects=True,
+    )
+    assert save_response.status_code == 200
+    assert "Saved 2 marked pick board(s)." in save_response.text
+
+    with SessionLocal() as session:
+        memberships = session.scalars(
+            select(Membership).join(User, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.nickname == "Avi")
+        ).all()
+        assert memberships
+        member_id = memberships[0].id
+        windows = fetch_windows(pool_id)
+        submissions = session.scalars(select(PickSubmission).where(PickSubmission.member_id == member_id)).all()
+        saved_window_ids = {submission.window_id for submission in submissions}
+        assert any(window.id in saved_window_ids and window.round_key == "play_in" for window in windows)
+        assert any(window.id in saved_window_ids and window.round_key == "round_1" for window in windows)
