@@ -121,6 +121,15 @@ def localize_datetime_input(value: datetime) -> str:
     return value.astimezone(LOCAL_TZ).strftime("%Y-%m-%dT%H:%M")
 
 
+def localize_datetime_display(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
+
+
+templates.env.globals["localize_datetime_display"] = localize_datetime_display
+
+
 def generated_window_name(round_key: str, team_one: str, team_two: str) -> str:
     if round_key == "play_in":
         return f"Play-In: {team_name(team_one)} vs {team_name(team_two)}"
