@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus, urlencode
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -23,14 +24,14 @@ from app.data.nba_catalog import TEAM_BY_CODE, TEAM_CATALOG, all_teams_grouped_f
 from app.db import get_session, init_db
 from app.domain.scoring import MemberState, ResultEnvelope, SubmissionEnvelope, WindowEnvelope, leaderboard_as_dict, score_pool
 from app.models import BettingWindow, EventLog, InviteLink, Membership, PaymentLedgerEntry, PickSubmission, Pool, ResultSnapshot, User
-from app.services.automation import start_scheduler
+from app.services.automation import auto_lock_due_windows, start_scheduler
 from app.services.recovery import export_bundle, restore_from_snapshot_json
 
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 settings = get_settings()
-LOCAL_TZ = datetime.now().astimezone().tzinfo or timezone.utc
+LOCAL_TZ = ZoneInfo("Asia/Jerusalem")
 
 TEAM_NAMES = {team.code: team.name for team in TEAM_CATALOG}
 TEAM_SELECT_GROUPS = all_teams_grouped_for_select()
@@ -112,6 +113,12 @@ def local_input_value(offset_days: int = 0, hour: int = 12) -> str:
     local_dt = datetime.now(LOCAL_TZ).replace(minute=0, second=0, microsecond=0)
     local_dt = (local_dt + timedelta(days=offset_days)).replace(hour=hour)
     return local_dt.strftime("%Y-%m-%dT%H:%M")
+
+
+def localize_datetime_input(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(LOCAL_TZ).strftime("%Y-%m-%dT%H:%M")
 
 
 def generated_window_name(round_key: str, team_one: str, team_two: str) -> str:
@@ -956,6 +963,8 @@ def _delete_membership(session: Session, membership: Membership) -> None:
 
 
 def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
+    if auto_lock_due_windows(session):
+        session.commit()
     pool = session.get(Pool, pool_id)
     memberships = session.scalars(select(Membership).where(Membership.pool_id == pool_id)).all()
     users = {user.id: user for user in session.scalars(select(User).where(User.id.in_([m.user_id for m in memberships]))).all()}
@@ -1078,6 +1087,7 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
         "all_player_options": ALL_PLAYER_OPTIONS,
         "default_window_opens_at": local_input_value(offset_days=0, hour=12),
         "default_window_locks_at": local_input_value(offset_days=2, hour=19),
+        "window_schedule_inputs": {window.id: {"opens_at": localize_datetime_input(window.opens_at), "locks_at": localize_datetime_input(window.locks_at)} for window in windows},
         "play_in_explanation": PLAY_IN_EXPLANATION,
         "closed_pick_tables": closed_pick_tables,
         "matchup_lookup": matchup_lookup,
@@ -1613,6 +1623,8 @@ async def submit_picks(
     session: Session = Depends(get_session),
 ) -> Response:
     membership = require_membership(request, session, pool_id)
+    if auto_lock_due_windows(session):
+        session.commit()
     window = session.get(BettingWindow, window_id)
     if not window or window.pool_id != pool_id:
         raise HTTPException(status_code=404, detail="Window not found.")
@@ -1643,6 +1655,8 @@ async def submit_all_picks(
     session: Session = Depends(get_session),
 ) -> Response:
     membership = require_membership(request, session, pool_id)
+    if auto_lock_due_windows(session):
+        session.commit()
     windows = load_pool_context(session, pool_id)["windows"]
     try:
         submissions_to_save, skipped_labels = await parse_bulk_submission_payloads(request, windows)
@@ -1686,6 +1700,51 @@ def lock_window(pool_id: str, window_id: str, request: Request, session: Session
     session.add(EventLog(pool_id=pool_id, actor_member_id=commissioner.id, event_type="window_locked", payload={"window_id": window_id}))
     session.commit()
     return RedirectResponse(url=redirect_with_tab(pool_id, "commissioner"), status_code=303)
+
+
+@app.post("/pools/{pool_id}/windows/{window_id}/schedule")
+def update_window_schedule(
+    pool_id: str,
+    window_id: str,
+    request: Request,
+    opens_at: str = Form(...),
+    locks_at: str = Form(...),
+    session: Session = Depends(get_session),
+) -> Response:
+    commissioner = require_commissioner(request, session, pool_id)
+    window = session.get(BettingWindow, window_id)
+    if not window or window.pool_id != pool_id:
+        raise HTTPException(status_code=404, detail="Window not found.")
+
+    parsed_opens_at = parse_iso_datetime(opens_at)
+    parsed_locks_at = parse_iso_datetime(locks_at)
+    if parsed_locks_at <= parsed_opens_at:
+        return RedirectResponse(
+            url=redirect_with_message(pool_id, "commissioner", "error", "Lock time must be after the open time."),
+            status_code=303,
+        )
+
+    window.opens_at = parsed_opens_at
+    window.locks_at = parsed_locks_at
+    if parsed_locks_at <= utcnow():
+        window.is_locked = True
+        window.is_revealed = True
+        window.revealed_at = utcnow()
+    else:
+        if window.is_locked:
+            window.is_locked = False
+            window.is_revealed = False
+            window.revealed_at = None
+    session.add(
+        EventLog(
+            pool_id=pool_id,
+            actor_member_id=commissioner.id,
+            event_type="window_schedule_updated",
+            payload={"window_id": window_id, "opens_at": parsed_opens_at.isoformat(), "locks_at": parsed_locks_at.isoformat()},
+        )
+    )
+    session.commit()
+    return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "success", f"Updated schedule for {window.name}."), status_code=303)
 
 
 @app.post("/pools/{pool_id}/windows/{window_id}/unlock")

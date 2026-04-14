@@ -17,7 +17,7 @@ os.environ["SCHEDULER_ENABLED"] = "false"
 
 from app.data.nba_catalog import TEAM_BY_CODE, players_for_teams, teams_by_conference  # noqa: E402
 from app.db import SessionLocal, init_db  # noqa: E402
-from app.main import app, load_pool_context, team_logo  # noqa: E402
+from app.main import app, load_pool_context, localize_datetime_input, parse_iso_datetime, team_logo  # noqa: E402
 from app.models import BettingWindow, Membership, PickSubmission, ResultSnapshot, User  # noqa: E402
 
 
@@ -199,6 +199,73 @@ def unlock_window_and_assert_open(commissioner_client: TestClient, pool_url: str
     with SessionLocal() as session:
         refreshed = session.get(BettingWindow, window.id)
         assert refreshed is not None and not refreshed.is_locked and not refreshed.is_revealed
+
+
+def test_commissioner_can_update_window_times() -> None:
+    commissioner_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Window Timing Pool")
+    pool_id = pool_id_from_url(pool_url)
+    early_window = find_window_by_name(pool_id, "Early Picks")
+
+    response = commissioner_client.post(
+        f"{pool_url}/windows/{early_window.id}/schedule",
+        data={"opens_at": "2026-04-15T10:00", "locks_at": "2026-04-16T21:30"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with SessionLocal() as session:
+        refreshed = session.get(BettingWindow, early_window.id)
+        assert refreshed is not None
+        assert refreshed.opens_at.isoformat().startswith("2026-04-15T07:00:00")
+        assert refreshed.locks_at.isoformat().startswith("2026-04-16T18:30:00")
+        assert localize_datetime_input(refreshed.opens_at) == "2026-04-15T10:00"
+        assert localize_datetime_input(refreshed.locks_at) == "2026-04-16T21:30"
+
+
+def test_israel_timezone_roundtrip_for_schedule_inputs() -> None:
+    parsed = parse_iso_datetime("2026-04-14T10:59")
+    assert parsed.isoformat().startswith("2026-04-14T07:59:00")
+    assert localize_datetime_input(parsed) == "2026-04-14T10:59"
+
+
+def test_expired_window_auto_locks_before_player_submit() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Auto Lock Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    player_client.post(f"/invite/{invite_token}", data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"}, follow_redirects=False)
+
+    early_window = find_window_by_name(pool_id, "Early Picks")
+    update_response = commissioner_client.post(
+        f"{pool_url}/windows/{early_window.id}/schedule",
+        data={"opens_at": "2026-04-10T10:00", "locks_at": "2026-04-11T10:00"},
+        follow_redirects=False,
+    )
+    assert update_response.status_code == 303
+
+    response = player_client.post(
+        f"{pool_url}/windows/{early_window.id}/submit",
+        data={
+            "conference_finalists_east": "BOS",
+            "conference_finalists_west": "OKC",
+            "nba_finalists_east": "BOS",
+            "nba_finalists_west": "OKC",
+            "champion": "BOS",
+            "finals_mvp": "Jayson Tatum",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert "The bet is closed, you can bag to Gil" in response.text
+
+    with SessionLocal() as session:
+        refreshed = session.get(BettingWindow, early_window.id)
+        assert refreshed is not None
+        assert refreshed.is_locked is True
+        assert refreshed.is_revealed is True
 
 
 def leaderboard_points(pool_id: str) -> dict[str, int]:

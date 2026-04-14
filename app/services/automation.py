@@ -16,6 +16,12 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _normalize_aware(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _generate_monkey_payload(window: BettingWindow) -> dict:
     rng = random.Random(window.monkey_seed or int(window.created_at.timestamp()))
     if window.bet_type == "early":
@@ -47,6 +53,20 @@ def _generate_monkey_payload(window: BettingWindow) -> dict:
     return {"series": picks}
 
 
+def auto_lock_due_windows(session, now: datetime | None = None) -> int:
+    current_time = _normalize_aware(now or utcnow())
+    locked_count = 0
+    windows = session.scalars(select(BettingWindow).where(BettingWindow.is_locked.is_(False))).all()
+    for window in windows:
+        if _normalize_aware(window.locks_at) <= current_time:
+            window.is_locked = True
+            window.is_revealed = True
+            window.revealed_at = current_time
+            session.add(EventLog(pool_id=window.pool_id, actor_member_id=None, event_type="window_locked", payload={"window_id": window.id}))
+            locked_count += 1
+    return locked_count
+
+
 def process_windows() -> None:
     session = SessionLocal()
     try:
@@ -75,12 +95,7 @@ def process_windows() -> None:
                     session.add(
                         EventLog(pool_id=window.pool_id, actor_member_id=monkey_member.id, event_type="monkey_submitted", payload={"window_id": window.id})
                     )
-
-            if not window.is_locked and window.locks_at <= now:
-                window.is_locked = True
-                window.is_revealed = True
-                window.revealed_at = now
-                session.add(EventLog(pool_id=window.pool_id, actor_member_id=None, event_type="window_locked", payload={"window_id": window.id}))
+        auto_lock_due_windows(session, now)
 
         health = provider_healthcheck()
         if windows:

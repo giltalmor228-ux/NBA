@@ -913,13 +913,27 @@
         <div>
           <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Window controls</p>
           <h3 class="mt-2 text-2xl font-bold text-slate-900">Lock or reopen any board</h3>
+          <p class="mt-2 text-sm text-slate-500">You can update the open and stop times here. Once the stop time arrives, the board locks automatically.</p>
         </div>
         <div class="grid gap-3">
           {% for window in windows %}
             <div class="leaderboard-row">
-              <div>
+              <div class="min-w-0 flex-1">
                 <p class="text-lg font-bold text-slate-900">{{ window.name }}</p>
                 <p class="text-sm text-slate-500">{{ window.round_key.replace("_", " ") }}</p>
+                <form action="/pools/{{ pool.id }}/windows/{{ window.id }}/schedule" method="post" class="mt-3 grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+                  <label class="block">
+                    <span class="field-label">Starts</span>
+                    <input name="opens_at" type="datetime-local" value="{{ window_schedule_inputs[window.id].opens_at }}" class="friendly-input" required />
+                  </label>
+                  <label class="block">
+                    <span class="field-label">Stops / locks</span>
+                    <input name="locks_at" type="datetime-local" value="{{ window_schedule_inputs[window.id].locks_at }}" class="friendly-input" required />
+                  </label>
+                  <div class="flex items-end">
+                    <button class="secondary-action">Save times</button>
+                  </div>
+                </form>
               </div>
               <div class="flex gap-3">
                 {% if window.is_locked %}
