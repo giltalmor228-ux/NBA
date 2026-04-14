@@ -17,7 +17,7 @@ os.environ["SCHEDULER_ENABLED"] = "false"
 
 from app.data.nba_catalog import TEAM_BY_CODE, players_for_teams, teams_by_conference  # noqa: E402
 from app.db import SessionLocal, init_db  # noqa: E402
-from app.main import app, load_pool_context, localize_datetime_input, parse_iso_datetime, team_logo  # noqa: E402
+from app.main import app, load_pool_context, localize_datetime_display, localize_datetime_input, parse_iso_datetime, team_logo  # noqa: E402
 from app.models import BettingWindow, Membership, PickSubmission, ResultSnapshot, User  # noqa: E402
 
 
@@ -229,6 +229,30 @@ def test_israel_timezone_roundtrip_for_schedule_inputs() -> None:
     assert localize_datetime_input(parsed) == "2026-04-14T10:59"
 
 
+def test_window_datetime_display_uses_two_line_israel_format() -> None:
+    commissioner_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Display Format Pool")
+    pool_id = pool_id_from_url(pool_url)
+    early_window = find_window_by_name(pool_id, "Early Picks")
+
+    update_response = commissioner_client.post(
+        f"{pool_url}/windows/{early_window.id}/schedule",
+        data={"opens_at": "2026-04-14T11:44", "locks_at": "2026-04-15T05:00"},
+        follow_redirects=False,
+    )
+    assert update_response.status_code == 303
+
+    page = commissioner_client.get(f"{pool_url}?tab=overview")
+    assert page.status_code == 200
+    assert "Opens 14-04-2026 11:44<br />" in page.text
+    assert "Locks 15-04-2026 05:00" in page.text
+
+    parsed_open = parse_iso_datetime("2026-04-14T11:44")
+    parsed_lock = parse_iso_datetime("2026-04-15T05:00")
+    assert localize_datetime_display(parsed_open) == "14-04-2026 11:44"
+    assert localize_datetime_display(parsed_lock) == "15-04-2026 05:00"
+
+
 def test_expired_window_auto_locks_before_player_submit() -> None:
     commissioner_client = TestClient(app)
     player_client = TestClient(app)
@@ -427,8 +451,34 @@ def test_existing_pool_opens_without_membership_session() -> None:
     page = viewer_client.get(f"{pool_url}?tab=overview")
     assert page.status_code == 200
     assert "Open Pool" in page.text
-    assert "Guest" in page.text
+    assert "Sign in first" in page.text
     assert "Sign in to this pool" in page.text
+    assert "Overview" not in page.text
+
+
+def test_join_and_resume_set_persistent_pool_cookie() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Cookie Pool")
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    join_response = player_client.post(
+        f"/invite/{invite_token}",
+        data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"},
+        follow_redirects=False,
+    )
+    assert join_response.status_code == 303
+    set_cookie_header = join_response.headers.get("set-cookie", "")
+    assert "Max-Age=" in set_cookie_header
+
+    player_client.post(f"{pool_url}/signout", follow_redirects=False)
+    resume_response = player_client.post(
+        f"{pool_url}/resume",
+        data={"nickname": "Avi", "email": "avi@example.com"},
+        follow_redirects=False,
+    )
+    assert resume_response.status_code == 303
+    assert "Max-Age=" in resume_response.headers.get("set-cookie", "")
 
 
 def test_resume_commissioner_access_restores_betting_window_controls() -> None:

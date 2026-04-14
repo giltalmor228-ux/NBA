@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="space-y-8">
+  {% if flash_message %}
+    <section class="rounded-[1.75rem] px-5 py-4 text-sm leading-6 {% if flash_status == 'success' %}bg-emerald-50 text-emerald-800{% else %}bg-orange-50 text-orange-800{% endif %}">
+      {{ flash_message }}
+    </section>
+  {% endif %}
+  {% if resume_message %}
+    <section class="rounded-[1.75rem] px-5 py-4 text-sm leading-6 {% if resume_status == 'success' %}bg-emerald-50 text-emerald-800{% else %}bg-orange-50 text-orange-800{% endif %}">
+      {{ resume_message }}
+    </section>
+  {% endif %}
+
+  <section class="hero-shell overflow-hidden rounded-[2rem] p-6 md:p-8">
+    <div class="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+      <div class="space-y-5">
+        <span class="soft-badge">Invite-only playoff challenge</span>
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">{{ pool.season_label }}</p>
+          <h2 class="mt-3 text-4xl font-black tracking-tight text-slate-900">{{ pool.name }}</h2>
+          <p class="mt-4 max-w-2xl text-base leading-7 text-slate-600">
+            Sign in to your saved player account to see the pool dashboard, standings, bets, and bracket.
+          </p>
+        </div>
+        <div class="rounded-[1.75rem] bg-white/85 px-5 py-4 text-sm leading-7 text-slate-700 shadow-sm">
+          We keep you signed in on this device for {{ session_cookie_days }} days, so returning players usually will not need to sign in again unless they sign out or clear browser cookies.
+        </div>
+        {% if invite %}
+          <div class="flex flex-wrap gap-3">
+            <a href="/invite/{{ invite.token }}" class="pill-link">Register To Pool</a>
+          </div>
+        {% endif %}
+      </div>
+
+      <div class="card-surface space-y-4">
+        <div>
+          <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Sign in first</p>
+          <h3 class="mt-2 text-2xl font-bold text-slate-900">Open your pool account</h3>
+          <p class="mt-3 text-sm leading-6 text-slate-600">
+            Use the same nickname and email you used before. This works for both players and the commissioner account.
+          </p>
+        </div>
+        <form action="/pools/{{ pool.id }}/resume" method="post" class="grid gap-3">
+          <input name="nickname" class="friendly-input" placeholder="Original nickname" required />
+          <input name="email" class="friendly-input" placeholder="Original email if you used one" />
+          <button class="primary-action">Sign in to this pool</button>
+        </form>
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}

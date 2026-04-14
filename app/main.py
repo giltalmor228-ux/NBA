@@ -88,6 +88,17 @@ def current_membership(request: Request, session: Session) -> Membership | None:
     return session.get(Membership, membership_id)
 
 
+def set_session_cookie(response: Response, membership_id: str) -> None:
+    max_age = settings.session_cookie_max_age_days * 24 * 60 * 60
+    response.set_cookie(
+        settings.session_cookie_name,
+        encode_session(membership_id),
+        httponly=True,
+        samesite="lax",
+        max_age=max_age,
+    )
+
+
 def require_membership(request: Request, session: Session, pool_id: str) -> Membership:
     membership = current_membership(request, session)
     if not membership or membership.pool_id != pool_id:
@@ -1363,7 +1374,7 @@ def create_pool(
     session.commit()
 
     response = RedirectResponse(url=redirect_with_tab(pool.id), status_code=303)
-    response.set_cookie(settings.session_cookie_name, encode_session(commissioner_membership.id), httponly=True, samesite="lax")
+    set_session_cookie(response, commissioner_membership.id)
     return response
 
 
@@ -1395,7 +1406,7 @@ def join_pool(
     session.add(EventLog(pool_id=invite.pool_id, actor_member_id=membership.id, event_type="player_joined", payload={"nickname": nickname}))
     session.commit()
     response = RedirectResponse(url=f"/pools/{invite.pool_id}", status_code=303)
-    response.set_cookie(settings.session_cookie_name, encode_session(membership.id), httponly=True, samesite="lax")
+    set_session_cookie(response, membership.id)
     return response
 
 
@@ -1411,6 +1422,9 @@ def pool_detail(pool_id: str, request: Request, session: Session = Depends(get_s
     context["resume_message"] = request.query_params.get("resume_message")
     context["flash_status"] = request.query_params.get("flash_status")
     context["flash_message"] = request.query_params.get("flash_message")
+    context["session_cookie_days"] = settings.session_cookie_max_age_days
+    if not context["current_membership"]:
+        return templates.TemplateResponse(request, "pool_gate.html", context)
     return templates.TemplateResponse(request, "pool.html", context)
 
 
@@ -1553,7 +1567,7 @@ def resume_pool_access(
     membership, user = candidates[0]
     message = f"Welcome back, {user.nickname}. Your access has been restored."
     response = RedirectResponse(url=f"{redirect_with_tab(pool_id)}&resume_status=success&resume_message={quote_plus(message)}", status_code=303)
-    response.set_cookie(settings.session_cookie_name, encode_session(membership.id), httponly=True, samesite="lax")
+    set_session_cookie(response, membership.id)
     return response
 
 
@@ -2036,7 +2050,7 @@ def export_pool(pool_id: str, request: Request, session: Session = Depends(get_s
 def recover_pool(snapshot: UploadFile = File(...), session: Session = Depends(get_session)) -> Response:
     pool, commissioner_membership_id = restore_from_snapshot_json(session, snapshot.file.read())
     response = RedirectResponse(url=f"/pools/{pool.id}", status_code=303)
-    response.set_cookie(settings.session_cookie_name, encode_session(commissioner_membership_id), httponly=True, samesite="lax")
+    set_session_cookie(response, commissioner_membership_id)
     return response
 
 
