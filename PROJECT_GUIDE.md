@@ -1,291 +1,372 @@
 # PROJECT GUIDE
 
-## Overview
+## Product overview
 
-`NBA Playoff Pool` is a private FastAPI web app for running an NBA postseason prediction league.
+`NBA Playoff Pool` is a private web app for running a playoff prediction competition for a small group of friends.
 
-The app supports:
+The current implementation is built for manual operation by a commissioner and includes:
 
-- invite-only pools
+- invite-only pool management
 - commissioner and player roles
-- early-pick boards
-- play-in winner picks
-- playoff series picks
-- automated bot participation through `The Monkey`
-- bracket generation from seeded standings
-- deterministic leaderboard recomputation
-- export and recovery workflows
+- one automated Monkey bot participant
+- early picks
+- play-in winner boards
+- best-of-seven playoff series boards
+- seeded bracket generation through the NBA Finals
+- revealed bets and matchup tables
+- detailed player pages
+- backup and recovery tooling
 
-## Product goals
+## Product principles
 
-The app is designed around three priorities:
+The app is optimized for:
 
-1. reliable scoring
-2. clear commissioner operations
-3. recoverable competition state
+1. trust in the scoring
+2. easy commissioner operations
+3. continuity if the app needs recovery
 
-## Tech stack
+## Main screens
 
-- Python 3
-- FastAPI
-- SQLAlchemy
-- Jinja templates
-- SQLite by default, PostgreSQL-ready through configuration
-- pytest
-- APScheduler
-- openpyxl for fallback workbook generation
+## Home page
 
-## Project structure
+Used for:
 
-### `app/main.py`
+- creating a new pool
+- opening existing pools
 
-Primary web application entrypoint.
+## Invite page
 
-Includes:
+Used for:
 
-- routes
-- session handling
-- commissioner actions
-- bracket generation
-- player detail views
-- overview/bets/bracket/commissioner tabs
+- joining a pool with nickname, email, and avatar
 
-### `app/domain/scoring.py`
+## Pool dashboard
 
-Pure scoring logic.
-
-Includes:
-
-- early-pick scoring
-- series scoring
-- play-in scoring
-- exact-result bonus logic
-- tiebreak ranking
-
-### `app/models.py`
-
-Database tables for:
-
-- pools
-- users
-- memberships
-- betting windows
-- pick submissions
-- result snapshots
-- event logs
-- payment ledger entries
-
-### `app/data/nba_catalog.py`
-
-Static team and player catalog used by the current manual mode.
-
-### `app/services/automation.py`
-
-Background automation:
-
-- monkey submissions
-- lock/reveal deadline processing
-- provider health snapshots
-
-### `app/services/recovery.py`
-
-Recovery and continuity tools:
-
-- snapshot export
-- workbook export
-- CSV export
-- JSON restore
-
-### `app/templates/`
-
-Main templates:
-
-- `index.html`
-- `invite.html`
-- `pool.html`
-- `player.html`
-
-## Main user flows
-
-## 1. Create pool
-
-- commissioner creates a pool
-- app creates:
-  - commissioner user + membership
-  - Monkey user + membership
-  - invite link
-  - initial early-picks window
-- Monkey immediately submits early picks
-
-## 2. Join pool
-
-- player enters via invite link
-- app creates user + membership
-- session cookie is issued
-
-## 3. Submit picks
-
-- players submit picks in open windows
-- early picks require all fields
-- play-in requires winner
-- playoff series require winner and total games
-
-## 4. Lock and reveal
-
-- commissioner can lock any window manually
-- scheduler can also auto-lock at deadline
-- revealed windows appear in `Closed Bets`
-
-## 5. Post results
-
-- commissioner can update season results one field at a time
-- commissioner can post play-in or series outcomes
-- downstream bracket placeholders materialize automatically
-
-## 6. Inspect players
-
-- leaderboard entries link to player detail pages
-- player page shows:
-  - score stats
-  - breakdown
-  - visible locked picks only
-
-## 7. Export and recover
-
-- commissioners can export a backup bundle
-- bundle contains:
-  - `snapshot.json`
-  - CSVs
-  - operator workbook
-- recovery creates a new pool from the snapshot
-
-## Tabs
+The dashboard has four tabs.
 
 ### Overview
 
-- current standings
-- active windows
+Shows:
+
+- live standings
+- projected ceiling
+- first-place spotlight message
+- active betting boards
 - tie-break rules
 - full scoring rules
 
+Player-specific behavior:
+
+- players can bulk-save all marked boards together
+- if a board already has a pick, a banner says so
+- if a board is locked, save attempts stay on the page and show an error message
+
 ### Closed Bets
 
-- all revealed picks grouped by game/window
+Shows revealed picks only.
+
+Includes:
+
+- early picks as a table
+- revealed matchup picks as tables
+- point breakdown per matchup when results are posted
 
 ### Bracket
 
-- play-in layout
-- first round
-- second round placeholders
-- winner progression
+Shows:
+
+- West Play-In
+- East Play-In
+- West Round 1
+- East Round 1
+- West Semifinals
+- East Semifinals
+- Conference Finals
+- NBA Finals
+
+The bracket uses seed labels for play-in and first-round lanes and resolves future matchups as results are posted.
 
 ### Commissioner
 
-- create windows
-- generate seeded bracket
-- save early results separately
+Used for:
+
+- creating manual windows
+- generating a seeded bracket
+- posting early-pick season results
+- bulk-saving official game/series results
+- locking and reopening boards
+- updating open/lock schedule times
+- deleting windows
+- renaming players
+- removing players
+- deleting the whole pool
+- viewing the commissioner-only audit feed
+
+## Roles
+
+## Commissioner
+
+The commissioner can:
+
+- create and manage the pool
+- generate playoff windows from seeded standings
+- create manual boards
+- update schedule times for any board
+- lock or reopen a board
+- delete a board
 - post official results
-- lock/reopen windows
-- delete windows
-- commissioner-only result feed
+- rename players
+- remove players
+- delete the pool
 
-## Monkey behavior
+## Player
 
-The Monkey is an automated participant.
+A player can:
 
-Current behavior:
+- join via invite link
+- submit picks in open windows
+- bulk-save marked picks
+- view standings
+- view the bracket
+- view revealed bets after lock/reveal
+- view player detail pages
 
-- created automatically with the pool
-- submits early picks immediately
-- submits newly created manual windows immediately when teams are known
-- submits generated future bracket windows when upstream results materialize both teams
-- uses deterministic randomness based on the stored `monkey_seed`
+## Monkey
 
-## Bracket generation logic
+The Monkey:
 
-Commissioner enters top 10 East teams and top 10 West teams.
+- is created automatically in every pool
+- participates as a normal entrant
+- auto-submits when an eligible board becomes available
+- uses deterministic random choices from `monkey_seed`
+
+## Competition structure
+
+## Early Picks
+
+One board covering:
+
+- East conference finalist
+- West conference finalist
+- East NBA finalist
+- West NBA finalist
+- NBA champion
+- Finals MVP
+
+## Play-In boards
+
+Single-game winner boards for:
+
+- 7 vs 8
+- 9 vs 10
+- No. 8 seed decider
+
+## Playoff series boards
+
+Best-of-seven boards for:
+
+- Round 1
+- Round 2
+- Conference Finals
+- NBA Finals
+
+Each series board uses:
+
+- winner
+- total games
+
+The scoring engine converts total games into an exact-result string internally.
+
+## Typical commissioner workflow
+
+## 1. Create the pool
+
+When the commissioner creates a pool, the app also creates:
+
+- commissioner user and membership
+- Monkey user and membership
+- invite link
+- initial `Early Picks` window
+
+## 2. Share the invite
+
+Players join through the invite URL and receive a cookie-backed membership session.
+
+## 3. Build the competition structure
+
+The commissioner can either:
+
+- create manual boards
+- or generate the seeded bracket from top-10 conference standings
+
+## 4. Adjust board schedule
+
+In `Commissioner -> Window controls`, the commissioner can set:
+
+- start time
+- stop/lock time
+
+The app treats these as Israel local time in the UI and stores them in UTC.
+
+## 5. Let players submit picks
+
+Players use the Overview page to mark multiple picks and save them together.
+
+## 6. Lock/reveal boards
+
+Boards can be locked:
+
+- manually by the commissioner
+- automatically by deadline
+
+Once locked:
+
+- new picks are rejected
+- the board becomes revealed
+- it moves into the revealed-bets experience
+
+## 7. Post official results
+
+Commissioner posts:
+
+- early season results
+- play-in winners
+- playoff series outcomes
+
+When results are posted:
+
+- scores update
+- downstream bracket placeholders resolve if both participants become known
+
+## 8. Review standings and pages
+
+The app updates:
+
+- live standings
+- player pages
+- matchup tables
+- bracket progression
+
+## Bracket generation details
+
+The commissioner enters the top 10 seeds from each conference.
 
 The app generates:
 
-- East 7 vs 8
-- East 9 vs 10
-- East 8-seed decider
-- West 7 vs 8
-- West 9 vs 10
-- West 8-seed decider
-- East first-round windows
-- West first-round windows
-- East second-round placeholders
-- West second-round placeholders
-- East Conference Finals
-- West Conference Finals
-- NBA Finals
+- East and West play-in structure
+- Round 1
+- Round 2 placeholders
+- Conference Finals placeholders
+- NBA Finals placeholder
 
-The bracket tab resolves placeholders as official results are posted.
+As upstream winners become known, downstream series receive their real teams automatically.
 
-## Scoring summary
+## Scheduling behavior
 
-### Early picks
+The schedule editor is located in `Commissioner -> Window controls`.
 
-- East conference finalist: 2
-- West conference finalist: 2
-- East NBA finalist: 3
-- West NBA finalist: 3
-- champion: 5
-- Finals MVP: 1
+Rules:
 
-### Play-In
+- open time must be before lock time
+- the UI uses Israel local time
+- boards auto-lock once `locks_at` has passed
+- request-time auto-lock protection prevents late submissions even if the scheduler has not ticked yet
 
-- winner only: 1
+## Scoring overview
 
-### Series
+See [RULEBOOK.md](./RULEBOOK.md) for the full rules.
 
-- Round 1: winner 1, exact 3
-- Round 2: winner 2, exact 5
-- Conference Finals: winner 3, exact 8
-- NBA Finals: winner 4, exact 10
+Summary:
 
-### Exact-result bonus
+- Early Picks: 16 max points
+- Play-In: winner only
+- Series boards: weighted by round
+- exact-result bonus based on how many players hit the exact result
+- final standings use tiebreakers
 
-- one exact winner: +2
-- two exact winners: +1 each
-- three or more: 0
+## Player detail page
 
-## Current limitations
+A player page shows:
 
-- static roster/team catalog is still the source for player names
-- provider sync is not the active source of truth
+- standings stats
+- score breakdown summary table
+- visible revealed picks
+- boards still waiting on that player
 
-## Local run
+## Recovery and continuity
+
+Commissioners can export a recovery bundle containing:
+
+- `snapshot.json`
+- CSV files
+- `fallback_workbook.xlsx`
+
+The JSON snapshot is the restore source of truth.
+
+## Current manual-mode assumptions
+
+The app currently operates in manual mode for competition data.
+
+That means:
+
+- team and roster options come from the in-repo catalog
+- BallDontLie adapter exists, but live sync is not the active source of truth
+- official results are posted by the commissioner
+
+## Testing strategy
+
+### Unit/integration tests
+
+Run:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev]
+.venv/bin/pytest -q
+```
+
+### Real-flow smoke test
+
+Run:
+
+```bash
+.venv/bin/python scripts/smoke_new_features.py
+```
+
+The smoke test checks:
+
+- pool creation
+- invite/join
+- bracket generation
+- player bulk pick save
+- locked-bet error behavior
+- commissioner bulk result save
+- saved-result badges
+- member management
+- pool deletion
+
+## Deployment summary
+
+### Local
+
+```bash
 uvicorn app.main:app --reload
 ```
 
-## Docker run
+### Docker
 
 ```bash
 docker compose build
 docker compose up -d
 ```
 
-Then open:
+### Railway
 
-```text
-http://YOUR_SERVER_IP:8000
-```
+- deploy via Dockerfile
+- set `/health` as the healthcheck
+- set the required env vars
+- use Railway Postgres if you want managed Postgres
 
-## Tests
+## Where to read next
 
-```bash
-.venv/bin/pytest
-```
-
-## Related docs
-
-- `README.md`
-- `RULEBOOK.md`
-- `ARCHITECTURE.md`
+- [README.md](./README.md)
+- [RULEBOOK.md](./RULEBOOK.md)
+- [ARCHITECTURE.md](./ARCHITECTURE.md)
