@@ -268,6 +268,52 @@ def test_expired_window_auto_locks_before_player_submit() -> None:
         assert refreshed.is_revealed is True
 
 
+def test_overview_prioritizes_open_games_by_lock_time() -> None:
+    commissioner_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Overview Ordering Pool")
+
+    later = commissioner_client.post(
+        f"{pool_url}/windows",
+        data={
+            "name": "Later Lock Game",
+            "round_key": "round_1",
+            "bet_type": "series",
+            "opens_at": "2026-04-14T12:00",
+            "locks_at": "2026-04-18T19:00",
+            "team_one": "BOS",
+            "team_two": "NYK",
+            "series_key": "",
+            "next_tab": "overview",
+        },
+        follow_redirects=False,
+    )
+    assert later.status_code == 303
+
+    earlier = commissioner_client.post(
+        f"{pool_url}/windows",
+        data={
+            "name": "Earlier Lock Game",
+            "round_key": "conference_finals",
+            "bet_type": "series",
+            "opens_at": "2026-04-14T12:00",
+            "locks_at": "2026-04-15T13:00",
+            "team_one": "OKC",
+            "team_two": "MIN",
+            "series_key": "",
+            "next_tab": "overview",
+        },
+        follow_redirects=False,
+    )
+    assert earlier.status_code == 303
+
+    page = commissioner_client.get(f"{pool_url}?tab=overview")
+    assert page.status_code == 200
+    earlier_index = page.text.find("Earlier Lock Game")
+    later_index = page.text.find("Later Lock Game")
+    assert earlier_index != -1 and later_index != -1
+    assert earlier_index < later_index
+
+
 def leaderboard_points(pool_id: str) -> dict[str, int]:
     with SessionLocal() as session:
         context = load_pool_context(session, pool_id)

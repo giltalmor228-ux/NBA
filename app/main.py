@@ -983,16 +983,18 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
     ).all()
     results = session.scalars(select(ResultSnapshot).where(ResultSnapshot.pool_id == pool_id).order_by(ResultSnapshot.created_at)).all()
     result_payloads = latest_result_payloads(results)
-    def window_display_sort_key(window: BettingWindow) -> tuple[int, int, int, datetime, datetime]:
+    def window_display_sort_key(window: BettingWindow) -> tuple[int, datetime, int, datetime, datetime]:
         if window.bet_type == "early":
-            return (0, 0, 0, window.opens_at, window.created_at)
+            return (0, window.locks_at, 0, window.opens_at, window.created_at)
         conference = None
         series_list = window.config.get("series", [])
         if series_list:
             conference = series_list[0].get("conference")
         has_result = any(result_payloads.get(("series", series["series_key"])) for series in series_list)
         state_group = 2 if has_result else (0 if not window.is_locked else 1)
-        return (1, state_group, _series_priority(window.round_key, conference), window.opens_at, window.created_at)
+        if state_group == 0:
+            return (1, window.locks_at, _series_priority(window.round_key, conference), window.opens_at, window.created_at)
+        return (1 + state_group, window.locks_at, _series_priority(window.round_key, conference), window.opens_at, window.created_at)
     windows = sorted(windows, key=window_display_sort_key)
     invite = session.scalar(select(InviteLink).where(InviteLink.pool_id == pool_id, InviteLink.active.is_(True)))
     leaderboard = score_pool(
