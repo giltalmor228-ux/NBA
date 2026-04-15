@@ -1191,6 +1191,38 @@ def test_commissioner_can_delete_side_bet() -> None:
         assert session.get(SideBet, side_bet_id) is None
 
 
+def test_deleting_last_side_bet_returns_clean_empty_side_bets_page() -> None:
+    commissioner_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Delete Last Side Bet Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    create_response = commissioner_client.post(
+        f"{pool_url}/side-bets",
+        data={
+            "question": "Last remaining side bet?",
+            "answer": "yes",
+            "points_value": "1",
+            "opens_at": "2026-04-15T12:00",
+            "locks_at": "2026-04-16T15:00",
+        },
+        follow_redirects=False,
+    )
+    assert create_response.status_code == 303
+
+    with SessionLocal() as session:
+        side_bet = session.scalar(select(SideBet).where(SideBet.pool_id == pool_id))
+        assert side_bet is not None
+        side_bet_id = side_bet.id
+
+    delete_response = commissioner_client.post(
+        f"/pools/{pool_id}/side-bets/{side_bet_id}/delete",
+        follow_redirects=True,
+    )
+    assert delete_response.status_code == 200
+    assert "No side bets have been created yet." in delete_response.text
+    assert "Internal Server Error" not in delete_response.text
+
+
 def test_downstream_window_names_update_after_progression() -> None:
     commissioner_client = TestClient(app)
     pool_url = create_pool(commissioner_client, "Progression Names Pool")

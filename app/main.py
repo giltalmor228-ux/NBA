@@ -1160,9 +1160,12 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
     memberships = session.scalars(select(Membership).where(Membership.pool_id == pool_id)).all()
     users = {user.id: user for user in session.scalars(select(User).where(User.id.in_([m.user_id for m in memberships]))).all()}
     side_bets = session.scalars(select(SideBet).where(SideBet.pool_id == pool_id).order_by(SideBet.opens_at, SideBet.created_at)).all()
-    side_bet_submissions = session.scalars(
-        select(SideBetSubmission).where(SideBetSubmission.side_bet_id.in_([side_bet.id for side_bet in side_bets] or [""]))
-    ).all()
+    side_bet_ids = [side_bet.id for side_bet in side_bets]
+    side_bet_submissions = (
+        session.scalars(select(SideBetSubmission).where(SideBetSubmission.side_bet_id.in_(side_bet_ids))).all()
+        if side_bet_ids
+        else []
+    )
     windows = session.scalars(select(BettingWindow).where(BettingWindow.pool_id == pool_id).order_by(BettingWindow.opens_at)).all()
     submissions = session.scalars(
         select(PickSubmission).where(PickSubmission.window_id.in_([window.id for window in windows] or [""]))
