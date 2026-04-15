@@ -298,6 +298,29 @@ def _series_display_name(series: dict[str, Any]) -> str:
     return series.get("label") or series.get("series_key", "this matchup")
 
 
+def _resolved_window_name(window: BettingWindow, series: dict[str, Any], resolved_teams: list[str]) -> str:
+    if len(resolved_teams) != 2:
+        return window.name
+    conference = series.get("conference")
+    left_name = team_name(resolved_teams[0])
+    right_name = team_name(resolved_teams[1])
+    if window.round_key == "play_in":
+        prefix = f"{conference} Play-In" if conference else "Play-In"
+        return f"{prefix}: {left_name} vs {right_name}"
+    if window.round_key == "round_1":
+        prefix = f"{conference} Round 1" if conference else "Round 1"
+        return f"{prefix}: {left_name} vs {right_name}"
+    if window.round_key == "round_2":
+        prefix = f"{conference} Semifinal" if conference else "Semifinal"
+        return f"{prefix}: {left_name} vs {right_name}"
+    if window.round_key == "conference_finals":
+        prefix = f"{conference} Conference Finals" if conference else "Conference Finals"
+        return f"{prefix}: {left_name} vs {right_name}"
+    if window.round_key == "finals":
+        return f"NBA Finals: {left_name} vs {right_name}"
+    return generated_window_name(window.round_key, resolved_teams[0], resolved_teams[1])
+
+
 def _generate_monkey_payload(window: BettingWindow) -> dict[str, Any]:
     rng = random.Random(window.monkey_seed or int(window.created_at.timestamp()))
     if window.bet_type == "early":
@@ -358,15 +381,22 @@ def _materialize_resolved_windows(session: Session, pool_id: str) -> None:
     for window in windows:
         changed = False
         series_list = []
+        updated_name = window.name
         for series in window.config.get("series", []):
             updated_series = dict(series)
             resolved_teams, _ = _series_display_meta(series, result_payloads)
             if len(resolved_teams) == 2 and updated_series.get("teams") != resolved_teams:
                 updated_series["teams"] = resolved_teams
                 changed = True
+            if len(resolved_teams) == 2:
+                new_name = _resolved_window_name(window, updated_series, resolved_teams)
+                if new_name != updated_name:
+                    updated_name = new_name
+                    changed = True
             series_list.append(updated_series)
         if changed:
             window.config = {**window.config, "series": series_list}
+            window.name = updated_name
         _ensure_monkey_submission(session, window)
 
 

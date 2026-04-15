@@ -1045,6 +1045,73 @@ def test_generate_bracket_and_hide_result_feed_from_players() -> None:
     assert "Commissioner-only audit log" not in player_page.text
 
 
+def test_downstream_window_names_update_after_progression() -> None:
+    commissioner_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Progression Names Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    data = {"opens_at": "2026-04-14T12:00", "locks_at": "2026-04-16T19:00"}
+    east = ["BOS", "CLE", "NYK", "DET", "ORL", "PHI", "MIA", "CHA", "ATL", "TOR"]
+    west = ["OKC", "DEN", "MIN", "LAL", "LAC", "GSW", "PHX", "POR", "HOU", "SAS"]
+    for idx, team in enumerate(east, start=1):
+        data[f"east_seed_{idx}"] = team
+    for idx, team in enumerate(west, start=1):
+        data[f"west_seed_{idx}"] = team
+    response = commissioner_client.post(f"{pool_url}/generate-bracket", data=data, follow_redirects=False)
+    assert response.status_code == 303
+
+    east_8seed = find_window_by_series_key(pool_id, "play_in-east-8seed")
+    east_round_1 = find_window_by_series_key(pool_id, "round_1-east-1v8")
+    east_round_2 = find_window_by_series_key(pool_id, "round_2-east-top")
+    finals_window = find_window_by_series_key(pool_id, "finals-nba")
+
+    assert east_8seed.name == "East Play-In: No. 8 seed decider"
+    assert east_round_1.name == "East Round 1: Boston Celtics vs East #8"
+    assert east_round_2.name == "East Semifinal: Winner 1/8 vs Winner 4/5"
+    assert finals_window.name == "NBA Finals"
+
+    save_series_result(commissioner_client, pool_url, find_window_by_series_key(pool_id, "play_in-east-7v8"), "MIA")
+    save_series_result(commissioner_client, pool_url, find_window_by_series_key(pool_id, "play_in-east-9v10"), "ATL")
+    save_series_result(commissioner_client, pool_url, east_8seed, "ATL")
+
+    east_8seed = find_window_by_series_key(pool_id, "play_in-east-8seed")
+    east_round_1 = find_window_by_series_key(pool_id, "round_1-east-1v8")
+    assert east_8seed.name == "East Play-In: Charlotte Hornets vs Atlanta Hawks"
+    assert east_round_1.name == "East Round 1: Boston Celtics vs Atlanta Hawks"
+
+    save_series_result(commissioner_client, pool_url, east_round_1, "BOS", 6)
+    save_series_result(commissioner_client, pool_url, find_window_by_series_key(pool_id, "round_1-east-4v5"), "DET", 6)
+    save_series_result(commissioner_client, pool_url, find_window_by_series_key(pool_id, "round_1-west-1v8"), "OKC", 6)
+    save_series_result(commissioner_client, pool_url, find_window_by_series_key(pool_id, "round_1-west-4v5"), "LAL", 6)
+
+    east_round_2 = find_window_by_series_key(pool_id, "round_2-east-top")
+    west_round_2 = find_window_by_series_key(pool_id, "round_2-west-top")
+    assert east_round_2.name == "East Semifinal: Boston Celtics vs Detroit Pistons"
+    assert west_round_2.name == "West Semifinal: Oklahoma City Thunder vs Los Angeles Lakers"
+
+    save_series_result(commissioner_client, pool_url, east_round_2, "BOS", 6)
+    save_series_result(commissioner_client, pool_url, find_window_by_series_key(pool_id, "round_2-east-bottom"), "NYK", 6)
+    save_series_result(commissioner_client, pool_url, west_round_2, "OKC", 6)
+    save_series_result(commissioner_client, pool_url, find_window_by_series_key(pool_id, "round_2-west-bottom"), "MIN", 6)
+
+    east_finals = find_window_by_series_key(pool_id, "conference_finals-east")
+    west_finals = find_window_by_series_key(pool_id, "conference_finals-west")
+    assert east_finals.name == "East Conference Finals: Boston Celtics vs New York Knicks"
+    assert west_finals.name == "West Conference Finals: Oklahoma City Thunder vs Minnesota Timberwolves"
+
+    save_series_result(commissioner_client, pool_url, east_finals, "BOS", 6)
+    save_series_result(commissioner_client, pool_url, west_finals, "OKC", 6)
+
+    finals_window = find_window_by_series_key(pool_id, "finals-nba")
+    assert finals_window.name == "NBA Finals: Boston Celtics vs Oklahoma City Thunder"
+
+    commissioner_page = commissioner_client.get(f"{pool_url}?tab=commissioner")
+    assert commissioner_page.status_code == 200
+    assert "East Round 1: Boston Celtics vs Atlanta Hawks" in commissioner_page.text
+    assert "East Semifinal: Boston Celtics vs Detroit Pistons" in commissioner_page.text
+    assert "NBA Finals: Boston Celtics vs Oklahoma City Thunder" in commissioner_page.text
+
+
 def test_full_random_bracket_simulation_through_finals() -> None:
     rng = random.Random(20260413)
     commissioner_client = TestClient(app)
