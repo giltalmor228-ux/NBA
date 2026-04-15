@@ -23,7 +23,7 @@ from app.config import get_settings
 from app.data.nba_catalog import TEAM_BY_CODE, TEAM_CATALOG, all_teams_grouped_for_select, players_for_teams
 from app.db import get_session, init_db
 from app.domain.scoring import MemberState, ResultEnvelope, SubmissionEnvelope, WindowEnvelope, leaderboard_as_dict, score_pool
-from app.models import BettingWindow, EventLog, InviteLink, Membership, PaymentLedgerEntry, PickSubmission, Pool, ResultSnapshot, User
+from app.models import BettingWindow, EventLog, InviteLink, Membership, PaymentLedgerEntry, PickSubmission, Pool, ResultSnapshot, SideBet, SideBetSubmission, User
 from app.services.automation import auto_lock_due_windows, start_scheduler
 from app.services.recovery import export_bundle, restore_from_snapshot_json
 
@@ -37,7 +37,7 @@ TEAM_NAMES = {team.code: team.name for team in TEAM_CATALOG}
 TEAM_SELECT_GROUPS = all_teams_grouped_for_select()
 ALL_PLAYER_OPTIONS = sorted({player for team in TEAM_CATALOG for player in team.players})
 TEAM_PLAYER_LOOKUP = {team.code: list(team.players) for team in TEAM_CATALOG}
-VALID_POOL_TABS = {"overview", "bets", "bracket", "commissioner"}
+VALID_POOL_TABS = {"overview", "bets", "bracket", "side_bets", "commissioner"}
 PLAY_IN_EXPLANATION = (
     "The NBA Play-In Tournament uses each conference's 7-10 seeds. The 7-vs-8 winner becomes the No. 7 seed, "
     "the 9-vs-10 loser is eliminated, and the loser of 7-vs-8 plays the winner of 9-vs-10 for the No. 8 seed."
@@ -139,6 +139,7 @@ def localize_datetime_display(value: datetime) -> str:
 
 
 templates.env.globals["localize_datetime_display"] = localize_datetime_display
+templates.env.globals["localize_datetime_input"] = localize_datetime_input
 
 
 def generated_window_name(round_key: str, team_one: str, team_two: str) -> str:
@@ -162,6 +163,94 @@ def redirect_with_message(pool_id: str, tab: str, status: str, message: str) -> 
 
 def _normalize_email(value: str) -> str:
     return value.strip().lower()
+
+
+def _normalize_side_bet_answer(value: str | None) -> str:
+    return " ".join((value or "").strip().casefold().split())
+
+
+def _side_bet_answer_matches(official_answer: str | None, submitted_answer: str | None) -> bool:
+    normalized_official = _normalize_side_bet_answer(official_answer)
+    normalized_submitted = _normalize_side_bet_answer(submitted_answer)
+    return bool(normalized_official and normalized_submitted and normalized_official == normalized_submitted)
+
+
+def _parse_side_bet_points(raw_value: str) -> int:
+    try:
+        points = int(str(raw_value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Points must be a whole number.") from exc
+    if points <= 0:
+        raise ValueError("Points must be greater than zero.")
+    return points
+
+
+def _finalize_leaderboard(entries: list[Any]) -> list[Any]:
+    ordered = sorted(
+        entries,
+        key=lambda item: (
+            -item.total_points,
+            -item.exact_hits,
+            -int(item.finals_mvp_correct),
+            item.earliest_submission_at or datetime.max.replace(tzinfo=timezone.utc),
+            item.display_name.lower(),
+        ),
+    )
+    payout_rank = 0
+    for index, entry in enumerate(ordered, start=1):
+        entry.rank = index
+        if entry.payout_eligible:
+            payout_rank += 1
+            entry.payout_rank = payout_rank
+        else:
+            entry.payout_rank = None
+    return ordered
+
+
+def _apply_side_bet_scoring(
+    leaderboard: list[Any],
+    memberships: list[Membership],
+    users: dict[str, User],
+    side_bets: list[SideBet],
+    side_bet_submissions_by_key: dict[tuple[str, str], SideBetSubmission],
+) -> list[Any]:
+    entry_by_member_id = {entry.member_id: entry for entry in leaderboard}
+    for side_bet in side_bets:
+        for membership in memberships:
+            entry = entry_by_member_id.get(membership.id)
+            user = users.get(membership.user_id)
+            if not entry or not user:
+                continue
+            submission = side_bet_submissions_by_key.get((side_bet.id, membership.id))
+            auto_match = bool(submission and _side_bet_answer_matches(side_bet.answer, submission.answer))
+            awarded_points = side_bet.points_value if submission and (submission.approved is True or (submission.approved is not False and auto_match)) else 0
+            if awarded_points:
+                award_label = "Commissioner approved answer" if submission and submission.approved is True and not auto_match else "Matching answer"
+                entry.total_points += awarded_points
+                entry.breakdown.append(
+                    {
+                        "window": f"Side bet: {side_bet.question}",
+                        "type": "side_bet",
+                        "points": awarded_points,
+                        "details": [
+                            {"label": award_label, "points": awarded_points},
+                        ],
+                    }
+                )
+            if awarded_points:
+                continue
+            if side_bet.is_locked:
+                if not submission or submission.approved is False:
+                    continue
+                if submission.approved is None:
+                    if side_bet.answer:
+                        if auto_match:
+                            entry.max_remaining_points += side_bet.points_value
+                    else:
+                        entry.max_remaining_points += side_bet.points_value
+                continue
+            entry.max_remaining_points += side_bet.points_value
+    return _finalize_leaderboard(list(entry_by_member_id.values()))
 
 
 def _series_priority(round_key: str, conference: str | None = None) -> int:
@@ -740,6 +829,47 @@ def _build_pick_tables(
     return closed_rows, matchup_lookup
 
 
+def _build_side_bet_table(
+    pool: Pool,
+    side_bet: SideBet,
+    memberships: list[Membership],
+    users: dict[str, User],
+    side_bet_submissions_by_key: dict[tuple[str, str], SideBetSubmission],
+) -> dict[str, Any]:
+    rows = []
+    for membership in memberships:
+        user = users[membership.user_id]
+        submission = side_bet_submissions_by_key.get((side_bet.id, membership.id))
+        matches_official = bool(submission and _side_bet_answer_matches(side_bet.answer, submission.answer))
+        points = side_bet.points_value if submission and (submission.approved is True or (submission.approved is not False and matches_official)) else 0
+        rows.append(
+            {
+                "member": membership,
+                "user": user,
+                "player_bet": submission.answer if submission else "No answer yet",
+                "points": points,
+                "approval_label": (
+                    "Approved"
+                    if submission and submission.approved is True
+                    else "Rejected"
+                    if submission and submission.approved is False
+                    else "Auto match"
+                    if submission and matches_official
+                    else "Pending"
+                    if submission
+                    else "No answer yet"
+                ),
+                "matches_official": matches_official,
+                "submission": submission,
+            }
+        )
+    return {
+        "pool": pool,
+        "side_bet": side_bet,
+        "rows": rows,
+    }
+
+
 async def parse_submission_payload(request: Request, window: BettingWindow) -> dict[str, Any]:
     form = await request.form()
     payload_json = str(form.get("payload_json") or "").strip()
@@ -1007,6 +1137,8 @@ def _delete_membership(session: Session, membership: Membership) -> None:
     session.query(ResultSnapshot).filter(ResultSnapshot.created_by_member_id == membership.id).update({"created_by_member_id": None})
     for submission in session.scalars(select(PickSubmission).where(PickSubmission.member_id == membership.id)).all():
         session.delete(submission)
+    for submission in session.scalars(select(SideBetSubmission).where(SideBetSubmission.member_id == membership.id)).all():
+        session.delete(submission)
     for entry in session.scalars(select(PaymentLedgerEntry).where(PaymentLedgerEntry.member_id == membership.id)).all():
         session.delete(entry)
     user_id = membership.user_id
@@ -1027,6 +1159,10 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
     pool = session.get(Pool, pool_id)
     memberships = session.scalars(select(Membership).where(Membership.pool_id == pool_id)).all()
     users = {user.id: user for user in session.scalars(select(User).where(User.id.in_([m.user_id for m in memberships]))).all()}
+    side_bets = session.scalars(select(SideBet).where(SideBet.pool_id == pool_id).order_by(SideBet.opens_at, SideBet.created_at)).all()
+    side_bet_submissions = session.scalars(
+        select(SideBetSubmission).where(SideBetSubmission.side_bet_id.in_([side_bet.id for side_bet in side_bets] or [""]))
+    ).all()
     windows = session.scalars(select(BettingWindow).where(BettingWindow.pool_id == pool_id).order_by(BettingWindow.opens_at)).all()
     submissions = session.scalars(
         select(PickSubmission).where(PickSubmission.window_id.in_([window.id for window in windows] or [""]))
@@ -1084,6 +1220,8 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
         ],
     )
     submissions_by_window_member = {(item.window_id, item.member_id): item for item in submissions}
+    side_bet_submissions_by_key = {(item.side_bet_id, item.member_id): item for item in side_bet_submissions}
+    leaderboard = _apply_side_bet_scoring(leaderboard, memberships, users, side_bets, side_bet_submissions_by_key)
     for window in windows:
         render_series = []
         for series in window.config.get("series", []):
@@ -1130,6 +1268,40 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
     leader_row = leaderboard[0] if leaderboard else None
     leader_message = _latest_leader_message(session, pool_id)
     members_missing_email = [membership for membership in memberships if not (users.get(membership.user_id) and (users[membership.user_id].email or "").strip()) and not users[membership.user_id].is_monkey]
+    side_bet_rows = []
+    for side_bet in sorted(side_bets, key=lambda item: (1 if item.is_locked else 0, item.locks_at, item.opens_at, item.created_at)):
+        submission_rows = []
+        for membership in memberships:
+            user = users[membership.user_id]
+            submission = side_bet_submissions_by_key.get((side_bet.id, membership.id))
+            matches_official = bool(submission and _side_bet_answer_matches(side_bet.answer, submission.answer))
+            points_from_bet = side_bet.points_value if submission and (submission.approved is True or (submission.approved is not False and matches_official)) else 0
+            submission_rows.append(
+                {
+                    "membership": membership,
+                    "user": user,
+                    "submission": submission,
+                    "matches_official": matches_official,
+                    "approval_label": (
+                        "Approved"
+                        if submission and submission.approved is True
+                        else "Rejected"
+                        if submission and submission.approved is False
+                        else "Auto match"
+                        if submission and matches_official
+                        else "Pending"
+                        if submission
+                        else "No answer yet"
+                    ),
+                    "points_from_bet": points_from_bet,
+                }
+            )
+        side_bet_rows.append(
+            {
+                "side_bet": side_bet,
+                "submissions": submission_rows,
+            }
+        )
     return {
         "pool": pool,
         "memberships": memberships,
@@ -1156,6 +1328,9 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
         "leader_row": leader_row,
         "leader_message": leader_message,
         "members_missing_email": members_missing_email,
+        "side_bets": side_bets,
+        "side_bet_rows": side_bet_rows,
+        "side_bet_submissions_by_key": side_bet_submissions_by_key,
         "bracket_sections": _build_bracket_sections(windows, results),
         "bracket_board": _build_bracket_board(windows, results),
         "tie_break_rules": [
@@ -1190,7 +1365,7 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
                 "Earliest submission timestamp",
             ],
         },
-        "ceiling_explanation": "Ceiling = current points plus the maximum points still available from unresolved boards. Players who missed locked windows or already trail on scored boards can have different ceilings.",
+        "ceiling_explanation": "Ceiling = current points plus the maximum points still available from unresolved boards and side bets. Players who missed locked windows or unanswered locked side bets can have different ceilings.",
     }
 
 
@@ -1625,6 +1800,254 @@ def sign_out(pool_id: str) -> Response:
     return response
 
 
+@app.post("/pools/{pool_id}/side-bets")
+def create_side_bet(
+    pool_id: str,
+    request: Request,
+    question: str = Form(...),
+    answer: str = Form(""),
+    points_value: str = Form("1"),
+    opens_at: str = Form(...),
+    locks_at: str = Form(...),
+    session: Session = Depends(get_session),
+) -> Response:
+    commissioner = require_commissioner(request, session, pool_id)
+    parsed_opens_at = parse_iso_datetime(opens_at)
+    parsed_locks_at = parse_iso_datetime(locks_at)
+    if parsed_locks_at <= parsed_opens_at:
+        return RedirectResponse(url=redirect_with_message(pool_id, "side_bets", "error", "Lock time must be after the open time."), status_code=303)
+    clean_question = question.strip()
+    if not clean_question:
+        return RedirectResponse(url=redirect_with_message(pool_id, "side_bets", "error", "Write the side-bet question before saving."), status_code=303)
+    try:
+        parsed_points_value = _parse_side_bet_points(points_value)
+    except ValueError as exc:
+        return RedirectResponse(url=redirect_with_message(pool_id, "side_bets", "error", str(exc)), status_code=303)
+    side_bet = SideBet(
+        pool_id=pool_id,
+        question=clean_question,
+        answer=answer.strip() or None,
+        points_value=parsed_points_value,
+        opens_at=parsed_opens_at,
+        locks_at=parsed_locks_at,
+        is_locked=parsed_locks_at <= utcnow(),
+    )
+    session.add(side_bet)
+    session.flush()
+    session.add(
+        EventLog(
+            pool_id=pool_id,
+            actor_member_id=commissioner.id,
+            event_type="side_bet_created",
+            payload={"side_bet_id": side_bet.id, "question": clean_question, "points_value": parsed_points_value},
+        )
+    )
+    session.commit()
+    return RedirectResponse(url=redirect_with_message(pool_id, "side_bets", "success", "Side bet created."), status_code=303)
+
+
+@app.post("/pools/{pool_id}/side-bets/{side_bet_id}/submit")
+async def submit_side_bet(
+    pool_id: str,
+    side_bet_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> Response:
+    membership = require_membership(request, session, pool_id)
+    if auto_lock_due_windows(session):
+        session.commit()
+    side_bet = session.get(SideBet, side_bet_id)
+    if not side_bet or side_bet.pool_id != pool_id:
+        raise HTTPException(status_code=404, detail="Side bet not found.")
+    if side_bet.is_locked:
+        return RedirectResponse(url=redirect_with_message(pool_id, "side_bets", "error", "This side bet is closed."), status_code=303)
+    form = await request.form()
+    answer = str(form.get("answer") or "").strip()
+    if not answer:
+        return RedirectResponse(url=redirect_with_message(pool_id, "side_bets", "error", "Write an answer before saving."), status_code=303)
+    existing = session.scalar(select(SideBetSubmission).where(SideBetSubmission.side_bet_id == side_bet_id, SideBetSubmission.member_id == membership.id))
+    if existing:
+        existing.answer = answer
+        existing.submitted_at = utcnow()
+        existing.approved = None
+        existing.approved_at = None
+        existing.approved_by_member_id = None
+    else:
+        session.add(SideBetSubmission(side_bet_id=side_bet_id, member_id=membership.id, answer=answer))
+    session.add(
+        EventLog(
+            pool_id=pool_id,
+            actor_member_id=membership.id,
+            event_type="side_bet_submitted",
+            payload={"side_bet_id": side_bet_id},
+        )
+    )
+    session.commit()
+    return RedirectResponse(url=redirect_with_message(pool_id, "side_bets", "success", "Your side-bet answer was saved."), status_code=303)
+
+
+@app.post("/pools/{pool_id}/side-bets/{side_bet_id}/schedule")
+def update_side_bet_schedule(
+    pool_id: str,
+    side_bet_id: str,
+    request: Request,
+    opens_at: str = Form(...),
+    locks_at: str = Form(...),
+    session: Session = Depends(get_session),
+) -> Response:
+    commissioner = require_commissioner(request, session, pool_id)
+    side_bet = session.get(SideBet, side_bet_id)
+    if not side_bet or side_bet.pool_id != pool_id:
+        raise HTTPException(status_code=404, detail="Side bet not found.")
+    parsed_opens_at = parse_iso_datetime(opens_at)
+    parsed_locks_at = parse_iso_datetime(locks_at)
+    if parsed_locks_at <= parsed_opens_at:
+        return RedirectResponse(url=redirect_with_message(pool_id, "side_bets", "error", "Lock time must be after the open time."), status_code=303)
+    side_bet.opens_at = parsed_opens_at
+    side_bet.locks_at = parsed_locks_at
+    side_bet.is_locked = parsed_locks_at <= utcnow()
+    session.add(
+        EventLog(
+            pool_id=pool_id,
+            actor_member_id=commissioner.id,
+            event_type="side_bet_schedule_updated",
+            payload={"side_bet_id": side_bet_id},
+        )
+    )
+    session.commit()
+    return RedirectResponse(url=redirect_with_message(pool_id, "side_bets", "success", f"Updated schedule for: {side_bet.question}"), status_code=303)
+
+
+@app.post("/pools/{pool_id}/side-bets/{side_bet_id}/answer")
+def update_side_bet_answer(
+    pool_id: str,
+    side_bet_id: str,
+    request: Request,
+    answer: str = Form(""),
+    points_value: str = Form("1"),
+    session: Session = Depends(get_session),
+) -> Response:
+    commissioner = require_commissioner(request, session, pool_id)
+    side_bet = session.get(SideBet, side_bet_id)
+    if not side_bet or side_bet.pool_id != pool_id:
+        raise HTTPException(status_code=404, detail="Side bet not found.")
+    try:
+        parsed_points_value = _parse_side_bet_points(points_value)
+    except ValueError as exc:
+        return RedirectResponse(url=redirect_with_message(pool_id, "side_bets", "error", str(exc)), status_code=303)
+    side_bet.answer = answer.strip() or None
+    side_bet.points_value = parsed_points_value
+    session.add(
+        EventLog(
+            pool_id=pool_id,
+            actor_member_id=commissioner.id,
+            event_type="side_bet_answer_updated",
+            payload={"side_bet_id": side_bet_id, "points_value": parsed_points_value},
+        )
+    )
+    session.commit()
+    return RedirectResponse(url=redirect_with_message(pool_id, "side_bets", "success", "Side-bet details saved."), status_code=303)
+
+
+@app.post("/pools/{pool_id}/side-bets/{side_bet_id}/submissions/{submission_id}/approval")
+def update_side_bet_approval(
+    pool_id: str,
+    side_bet_id: str,
+    submission_id: str,
+    request: Request,
+    decision: str = Form(...),
+    session: Session = Depends(get_session),
+) -> Response:
+    commissioner = require_commissioner(request, session, pool_id)
+    side_bet = session.get(SideBet, side_bet_id)
+    submission = session.get(SideBetSubmission, submission_id)
+    if not side_bet or side_bet.pool_id != pool_id or not submission or submission.side_bet_id != side_bet_id:
+        raise HTTPException(status_code=404, detail="Side bet submission not found.")
+    if decision == "approve":
+        submission.approved = True
+        submission.approved_at = utcnow()
+        submission.approved_by_member_id = commissioner.id
+    elif decision == "reject":
+        submission.approved = False
+        submission.approved_at = utcnow()
+        submission.approved_by_member_id = commissioner.id
+    else:
+        submission.approved = None
+        submission.approved_at = None
+        submission.approved_by_member_id = None
+    session.add(
+        EventLog(
+            pool_id=pool_id,
+            actor_member_id=commissioner.id,
+            event_type="side_bet_approval_updated",
+            payload={"side_bet_id": side_bet_id, "submission_id": submission_id, "decision": decision},
+        )
+    )
+    session.commit()
+    return RedirectResponse(url=redirect_with_message(pool_id, "side_bets", "success", "Side-bet approval updated."), status_code=303)
+
+
+@app.post("/pools/{pool_id}/side-bets/{side_bet_id}/delete")
+def delete_side_bet(
+    pool_id: str,
+    side_bet_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> Response:
+    commissioner = require_commissioner(request, session, pool_id)
+    side_bet = session.get(SideBet, side_bet_id)
+    if not side_bet or side_bet.pool_id != pool_id:
+        raise HTTPException(status_code=404, detail="Side bet not found.")
+    for submission in session.scalars(select(SideBetSubmission).where(SideBetSubmission.side_bet_id == side_bet_id)).all():
+        session.delete(submission)
+    side_bet_question = side_bet.question
+    session.delete(side_bet)
+    session.add(
+        EventLog(
+            pool_id=pool_id,
+            actor_member_id=commissioner.id,
+            event_type="side_bet_deleted",
+            payload={"side_bet_id": side_bet_id, "question": side_bet_question},
+        )
+    )
+    session.commit()
+    return RedirectResponse(url=redirect_with_message(pool_id, "side_bets", "success", f"Deleted side bet: {side_bet_question}"), status_code=303)
+
+
+@app.get("/pools/{pool_id}/side-bets/{side_bet_id}/table", response_class=HTMLResponse)
+def side_bet_pick_table(
+    pool_id: str,
+    side_bet_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> HTMLResponse:
+    membership = require_membership(request, session, pool_id)
+    context = load_pool_context(session, pool_id)
+    side_bet = next((item for item in context["side_bets"] if item.id == side_bet_id), None)
+    if not side_bet:
+        raise HTTPException(status_code=404, detail="Side bet not found.")
+    if not side_bet.is_locked and membership.role != "commissioner":
+        raise HTTPException(status_code=403, detail="Side-bet answers are visible after the bet locks.")
+    table = _build_side_bet_table(
+        context["pool"],
+        side_bet,
+        context["memberships"],
+        context["users"],
+        context["side_bet_submissions_by_key"],
+    )
+    return templates.TemplateResponse(
+        request,
+        "side_bet_table.html",
+        {
+            **context,
+            "side_bet_table": table,
+            "active_tab": "side_bets",
+            "current_membership": membership,
+            "is_commissioner": membership.role == "commissioner",
+        },
+    )
+
+
 @app.post("/pools/{pool_id}/windows")
 def create_window(
     pool_id: str,
@@ -1965,6 +2388,10 @@ def delete_pool(pool_id: str, request: Request, session: Session = Depends(get_s
     session.query(PickSubmission).filter(PickSubmission.window_id.in_(select(BettingWindow.id).where(BettingWindow.pool_id == pool_id))).delete(
         synchronize_session=False
     )
+    session.query(SideBetSubmission).filter(SideBetSubmission.side_bet_id.in_(select(SideBet.id).where(SideBet.pool_id == pool_id))).delete(
+        synchronize_session=False
+    )
+    session.query(SideBet).filter(SideBet.pool_id == pool_id).delete()
     session.query(PaymentLedgerEntry).filter(PaymentLedgerEntry.pool_id == pool_id).delete()
     session.query(InviteLink).filter(InviteLink.pool_id == pool_id).delete()
     session.query(BettingWindow).filter(BettingWindow.pool_id == pool_id).delete()

@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import get_settings
@@ -35,6 +35,16 @@ def init_db() -> None:
     from app import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _ensure_runtime_schema()
+
+
+def _ensure_runtime_schema() -> None:
+    inspector = inspect(engine)
+    if inspector.has_table("side_bets"):
+        column_names = {column["name"] for column in inspector.get_columns("side_bets")}
+        if "points_value" not in column_names:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE side_bets ADD COLUMN points_value INTEGER NOT NULL DEFAULT 1"))
 
 
 def get_session() -> Generator[Session, None, None]:

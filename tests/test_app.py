@@ -18,7 +18,7 @@ os.environ["SCHEDULER_ENABLED"] = "false"
 from app.data.nba_catalog import TEAM_BY_CODE, players_for_teams, teams_by_conference  # noqa: E402
 from app.db import SessionLocal, init_db  # noqa: E402
 from app.main import app, load_pool_context, localize_datetime_display, localize_datetime_input, parse_iso_datetime, team_logo  # noqa: E402
-from app.models import BettingWindow, Membership, PickSubmission, ResultSnapshot, User  # noqa: E402
+from app.models import BettingWindow, Membership, PickSubmission, ResultSnapshot, SideBet, SideBetSubmission, User  # noqa: E402
 
 
 init_db()
@@ -302,8 +302,8 @@ def test_overview_prioritizes_open_games_by_lock_time() -> None:
             "name": "Later Lock Game",
             "round_key": "round_1",
             "bet_type": "series",
-            "opens_at": "2026-04-14T12:00",
-            "locks_at": "2026-04-18T19:00",
+            "opens_at": "2026-04-16T12:00",
+            "locks_at": "2026-04-21T19:00",
             "team_one": "BOS",
             "team_two": "NYK",
             "series_key": "",
@@ -319,8 +319,8 @@ def test_overview_prioritizes_open_games_by_lock_time() -> None:
             "name": "Earlier Lock Game",
             "round_key": "conference_finals",
             "bet_type": "series",
-            "opens_at": "2026-04-14T12:00",
-            "locks_at": "2026-04-15T13:00",
+            "opens_at": "2026-04-16T12:00",
+            "locks_at": "2026-04-17T13:00",
             "team_one": "OKC",
             "team_two": "MIN",
             "series_key": "",
@@ -332,9 +332,10 @@ def test_overview_prioritizes_open_games_by_lock_time() -> None:
 
     page = commissioner_client.get(f"{pool_url}?tab=overview")
     assert page.status_code == 200
-    earlier_index = page.text.find("West Conference Finals: Oklahoma City Thunder vs Minnesota Timberwolves")
-    later_index = page.text.find("East Round 1: Boston Celtics vs New York Knicks")
-    assert earlier_index != -1 and later_index != -1
+    with SessionLocal() as session:
+        ordered_names = [window.name for window in load_pool_context(session, pool_id_from_url(pool_url))["windows"]]
+    earlier_index = ordered_names.index("West Conference Finals: Oklahoma City Thunder vs Minnesota Timberwolves")
+    later_index = ordered_names.index("East Round 1: Boston Celtics vs New York Knicks")
     assert earlier_index < later_index
 
 
@@ -1043,6 +1044,151 @@ def test_generate_bracket_and_hide_result_feed_from_players() -> None:
     player_page = player_client.get(f"{pool_url}?tab=overview")
     assert player_page.status_code == 200
     assert "Commissioner-only audit log" not in player_page.text
+
+
+def test_side_bets_tab_supports_create_submit_auto_lock_and_approval() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Side Bets Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    player_client.post(f"/invite/{invite_token}", data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"}, follow_redirects=False)
+
+    create_response = commissioner_client.post(
+        f"{pool_url}/side-bets",
+        data={
+            "question": "Who scores first in Game 1?",
+            "answer": "Deni Avdija",
+            "points_value": "3",
+            "opens_at": "2026-04-15T12:00",
+            "locks_at": "2026-04-16T15:00",
+        },
+        follow_redirects=False,
+    )
+    assert create_response.status_code == 303
+
+    side_bets_page = commissioner_client.get(f"{pool_url}?tab=side_bets")
+    assert side_bets_page.status_code == 200
+    assert "Who scores first in Game 1?" in side_bets_page.text
+    assert "Create side bet" in side_bets_page.text
+    assert "Worth 3 points" in side_bets_page.text
+
+    with SessionLocal() as session:
+        context_before_submit = load_pool_context(session, pool_id)
+        avi_before_submit = next(row for row in context_before_submit["leaderboard_rows"] if row["display_name"] == "Avi")
+        assert avi_before_submit["projected_ceiling"] >= 19
+
+    with SessionLocal() as session:
+        side_bet = session.scalar(select(SideBet).where(SideBet.pool_id == pool_id))
+        assert side_bet is not None
+        side_bet_id = side_bet.id
+
+    submit_response = player_client.post(
+        f"{pool_url}/side-bets/{side_bet_id}/submit",
+        data={"answer": "deni avdija"},
+        follow_redirects=True,
+    )
+    assert submit_response.status_code == 200
+    assert "Your side-bet answer was saved." in submit_response.text
+    assert "You already answered this side bet. Current answer: deni avdija" in submit_response.text
+
+    commissioner_review_page = commissioner_client.get(f"{pool_url}?tab=side_bets")
+    assert commissioner_review_page.status_code == 200
+    assert "Matches official answer" in commissioner_review_page.text
+    assert "Auto match" in commissioner_review_page.text
+    assert "Points From Bet" in commissioner_review_page.text
+    assert "Approval override" in commissioner_review_page.text
+    assert ">3<" in commissioner_review_page.text
+
+    side_bet_table = commissioner_client.get(f"/pools/{pool_id}/side-bets/{side_bet_id}/table")
+    assert side_bet_table.status_code == 200
+    assert "Every player's side-bet answer and points" in side_bet_table.text
+    assert "deni avdija" in side_bet_table.text
+
+    with SessionLocal() as session:
+        submission = session.scalar(select(SideBetSubmission).where(SideBetSubmission.side_bet_id == side_bet_id))
+        assert submission is not None
+        submission_id = submission.id
+
+    approve_response = commissioner_client.post(
+        f"/pools/{pool_id}/side-bets/{side_bet_id}/submissions/{submission_id}/approval",
+        data={"decision": "approve"},
+        follow_redirects=True,
+    )
+    assert approve_response.status_code == 200
+    assert "Side-bet approval updated." in approve_response.text
+    assert "Approved" in approve_response.text
+    assert ">3<" in approve_response.text
+
+    with SessionLocal() as session:
+        context_after_approval = load_pool_context(session, pool_id)
+        avi_after_approval = next(row for row in context_after_approval["leaderboard_rows"] if row["display_name"] == "Avi")
+        assert avi_after_approval["total_points"] >= 3
+
+    player_side_bet_table_hidden = player_client.get(f"/pools/{pool_id}/side-bets/{side_bet_id}/table")
+    assert player_side_bet_table_hidden.status_code == 403
+    player_side_bets_open_page = player_client.get(f"{pool_url}?tab=side_bets")
+    assert "View pick table" not in player_side_bets_open_page.text
+
+    schedule_response = commissioner_client.post(
+        f"/pools/{pool_id}/side-bets/{side_bet_id}/schedule",
+        data={"opens_at": "2026-04-10T10:00", "locks_at": "2026-04-11T10:00"},
+        follow_redirects=False,
+    )
+    assert schedule_response.status_code == 303
+
+    locked_submit = player_client.post(
+        f"{pool_url}/side-bets/{side_bet_id}/submit",
+        data={"answer": "someone else"},
+        follow_redirects=True,
+    )
+    assert locked_submit.status_code == 200
+    assert "This side bet is closed." in locked_submit.text
+
+    with SessionLocal() as session:
+        refreshed = session.get(SideBet, side_bet_id)
+        assert refreshed is not None
+        assert refreshed.is_locked is True
+
+    player_side_bet_table_visible = player_client.get(f"/pools/{pool_id}/side-bets/{side_bet_id}/table")
+    assert player_side_bet_table_visible.status_code == 200
+    player_side_bets_locked_page = player_client.get(f"{pool_url}?tab=side_bets")
+    assert "View pick table" in player_side_bets_locked_page.text
+
+
+def test_commissioner_can_delete_side_bet() -> None:
+    commissioner_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Delete Side Bet Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    create_response = commissioner_client.post(
+        f"{pool_url}/side-bets",
+        data={
+            "question": "First coach challenge?",
+            "answer": "Portland Trail Blazers",
+            "points_value": "2",
+            "opens_at": "2026-04-15T12:00",
+            "locks_at": "2026-04-16T15:00",
+        },
+        follow_redirects=False,
+    )
+    assert create_response.status_code == 303
+
+    with SessionLocal() as session:
+        side_bet = session.scalar(select(SideBet).where(SideBet.pool_id == pool_id))
+        assert side_bet is not None
+        side_bet_id = side_bet.id
+
+    delete_response = commissioner_client.post(
+        f"/pools/{pool_id}/side-bets/{side_bet_id}/delete",
+        follow_redirects=True,
+    )
+    assert delete_response.status_code == 200
+    assert "Deleted side bet: First coach challenge?" in delete_response.text
+
+    with SessionLocal() as session:
+        assert session.get(SideBet, side_bet_id) is None
 
 
 def test_downstream_window_names_update_after_progression() -> None:

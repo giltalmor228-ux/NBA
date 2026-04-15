@@ -99,6 +99,33 @@ class ResultSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class SideBet(Base):
+    __tablename__ = "side_bets"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    pool_id: Mapped[str] = mapped_column(ForeignKey("pools.id"))
+    question: Mapped[str] = mapped_column(String(255))
+    answer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    points_value: Mapped[int] = mapped_column(default=1)
+    opens_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    locks_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    is_locked: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SideBetSubmission(Base):
+    __tablename__ = "side_bet_submissions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    side_bet_id: Mapped[str] = mapped_column(ForeignKey("side_bets.id"))
+    member_id: Mapped[str] = mapped_column(ForeignKey("memberships.id"))
+    answer: Mapped[str] = mapped_column(Text)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    approved: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_by_member_id: Mapped[str | None] = mapped_column(ForeignKey("memberships.id"), nullable=True)
+
+
 class EventLog(Base):
     __tablename__ = "event_logs"
 

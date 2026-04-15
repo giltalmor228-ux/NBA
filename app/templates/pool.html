@@ -66,6 +66,7 @@
     <a href="/pools/{{ pool.id }}?tab=overview" class="pill-link {% if active_tab != 'overview' %}pill-link--secondary{% endif %}">Overview</a>
     <a href="/pools/{{ pool.id }}?tab=bets" class="pill-link {% if active_tab != 'bets' %}pill-link--secondary{% endif %}">Closed Bets</a>
     <a href="/pools/{{ pool.id }}?tab=bracket" class="pill-link {% if active_tab != 'bracket' %}pill-link--secondary{% endif %}">Bracket</a>
+    <a href="/pools/{{ pool.id }}?tab=side_bets" class="pill-link {% if active_tab != 'side_bets' %}pill-link--secondary{% endif %}">Side Bets</a>
     {% if is_commissioner %}
       <a href="/pools/{{ pool.id }}?tab=commissioner" class="pill-link {% if active_tab != 'commissioner' %}pill-link--secondary{% endif %}">Commissioner</a>
     {% endif %}
@@ -647,6 +648,174 @@
         </div>
       {% else %}
         <div class="card-surface text-slate-500">Generate the seeded bracket from the Commissioner tab to see the Play-In, First Round, and Second Round structure.</div>
+      {% endif %}
+    </section>
+  {% elif active_tab == "side_bets" %}
+    <section class="space-y-6">
+      <div class="card-surface">
+        <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Side Bets</p>
+        <h3 class="mt-2 text-2xl font-bold text-slate-900">Special pool questions</h3>
+        <p class="mt-3 text-sm leading-6 text-slate-600">Answer each side bet before it locks. Open side bets are shown by the nearest lock time first so nobody misses them. Exact matches against the official answer ignore upper/lower case.</p>
+      </div>
+
+      {% if is_commissioner %}
+        <section class="card-surface space-y-5">
+          <div>
+            <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Create side bet</p>
+            <h3 class="mt-2 text-2xl font-bold text-slate-900">Add a new side bet</h3>
+          </div>
+          <form action="/pools/{{ pool.id }}/side-bets" method="post" class="grid gap-4">
+            <input name="question" class="friendly-input" placeholder="Bet question" required />
+            <input name="answer" class="friendly-input" placeholder="Official answer (optional for now)" />
+            <div class="grid gap-4 md:grid-cols-3">
+              <input name="points_value" type="number" min="1" step="1" class="friendly-input" value="1" placeholder="Points this bet is worth" required />
+              <input name="opens_at" type="datetime-local" class="friendly-input" value="{{ default_window_opens_at }}" required />
+              <input name="locks_at" type="datetime-local" class="friendly-input" value="{{ default_window_locks_at }}" required />
+            </div>
+            <button class="primary-action">Create side bet</button>
+          </form>
+        </section>
+      {% endif %}
+
+      {% if side_bet_rows %}
+        <div class="grid gap-5 xl:grid-cols-2">
+          {% for row in side_bet_rows %}
+            {% set side_bet = row.side_bet %}
+            {% set current_submission = current_membership and side_bet_submissions_by_key.get((side_bet.id, current_membership.id)) %}
+            <section class="card-surface space-y-5">
+              <div class="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Side bet</p>
+                  <h3 class="mt-2 text-2xl font-bold text-slate-900">{{ side_bet.question }}</h3>
+                  <p class="mt-2 text-sm leading-6 text-slate-500">
+                    Opens {{ localize_datetime_display(side_bet.opens_at) }}<br />
+                    Locks {{ localize_datetime_display(side_bet.locks_at) }}
+                  </p>
+                  <p class="mt-2 text-sm font-semibold text-slate-700">Worth {{ side_bet.points_value }} point{{ "" if side_bet.points_value == 1 else "s" }}</p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <span class="status-pill {% if side_bet.is_locked %}status-pill--locked{% else %}status-pill--open{% endif %}">
+                    {{ "Locked" if side_bet.is_locked else "Open now" }}
+                  </span>
+                  {% if side_bet.is_locked or is_commissioner %}
+                    <a href="/pools/{{ pool.id }}/side-bets/{{ side_bet.id }}/table" class="pill-link pill-link--secondary">View pick table</a>
+                  {% endif %}
+                  {% if is_commissioner %}
+                    <form action="/pools/{{ pool.id }}/side-bets/{{ side_bet.id }}/delete" method="post">
+                      <button class="secondary-action">Delete</button>
+                    </form>
+                  {% endif %}
+                </div>
+              </div>
+
+              {% if current_submission %}
+                <div class="rounded-[1.25rem] bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+                  You already answered this side bet. Current answer: {{ current_submission.answer }}
+                </div>
+              {% endif %}
+
+              {% if current_membership and not is_commissioner %}
+                <div class="prediction-card space-y-4">
+                  <div>
+                    <p class="prediction-title">Your answer</p>
+                    <p class="mt-2 text-sm leading-6 text-slate-600">
+                      {% if side_bet.is_locked %}
+                        This side bet is locked, so answers can no longer be changed.
+                      {% else %}
+                        Write your answer here and save it before the lock time.
+                      {% endif %}
+                    </p>
+                  </div>
+                  <form action="/pools/{{ pool.id }}/side-bets/{{ side_bet.id }}/submit" method="post" class="grid gap-4 md:grid-cols-[1fr_auto]">
+                    <input name="answer" class="friendly-input" placeholder="Write your answer" value="{{ current_submission.answer if current_submission else '' }}" {% if side_bet.is_locked %}disabled{% endif %} required />
+                    <button class="primary-action" {% if side_bet.is_locked %}disabled{% endif %}>{{ "Update answer" if current_submission else "Save answer" }}</button>
+                  </form>
+                </div>
+              {% endif %}
+
+              {% if is_commissioner %}
+                <div class="grid gap-4 lg:grid-cols-2">
+                  <form action="/pools/{{ pool.id }}/side-bets/{{ side_bet.id }}/answer" method="post" class="prediction-card">
+                    <p class="prediction-title">Official answer and points</p>
+                    <input name="answer" class="friendly-input mt-4" value="{{ side_bet.answer or '' }}" placeholder="Set or update official answer" />
+                    <input name="points_value" type="number" min="1" step="1" class="friendly-input mt-4" value="{{ side_bet.points_value }}" placeholder="Points this bet is worth" required />
+                    <button class="secondary-action mt-4">Save answer</button>
+                  </form>
+                  <form action="/pools/{{ pool.id }}/side-bets/{{ side_bet.id }}/schedule" method="post" class="prediction-card grid gap-3">
+                    <p class="prediction-title">Schedule</p>
+                    <input name="opens_at" type="datetime-local" value="{{ localize_datetime_input(side_bet.opens_at) }}" class="friendly-input" required />
+                    <input name="locks_at" type="datetime-local" value="{{ localize_datetime_input(side_bet.locks_at) }}" class="friendly-input" required />
+                    <button class="secondary-action">Save times</button>
+                  </form>
+                </div>
+
+                <div class="overflow-x-auto">
+                  <table class="min-w-full overflow-hidden rounded-[1.5rem] bg-white text-left">
+                    <thead class="bg-[#fff8ef] text-xs uppercase tracking-[0.18em] text-slate-500">
+                      <tr>
+                        <th class="px-4 py-3">Player</th>
+                        <th class="px-4 py-3">Player bet</th>
+                        <th class="px-4 py-3">Points From Bet</th>
+                        <th class="px-4 py-3">Approval override</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for submission_row in row.submissions %}
+                        <tr class="border-t border-slate-100">
+                          <td class="px-4 py-3 font-semibold text-slate-900">{{ submission_row.user.nickname }}</td>
+                          <td class="px-4 py-3 text-slate-700">
+                            {% if submission_row.submission %}
+                              <p class="font-semibold text-slate-900">{{ submission_row.submission.answer }}</p>
+                            {% else %}
+                              <span class="text-slate-400">No answer yet</span>
+                            {% endif %}
+                          </td>
+                          <td class="px-4 py-3 font-semibold text-slate-900">{{ submission_row.points_from_bet }}</td>
+                          <td class="px-4 py-3">
+                            {% if submission_row.submission %}
+                              <p class="mb-2 text-xs uppercase tracking-[0.16em] text-slate-500">{{ submission_row.approval_label }}</p>
+                              <p class="mb-3 text-sm text-slate-500">
+                                {% if side_bet.answer %}
+                                  {% if submission_row.matches_official and submission_row.submission.approved != false %}
+                                    Matches official answer
+                                  {% elif not submission_row.matches_official %}
+                                    Different from official answer
+                                  {% else %}
+                                    Manually rejected
+                                  {% endif %}
+                                {% else %}
+                                  Official answer not set yet
+                                {% endif %}
+                              </p>
+                              <div class="flex flex-nowrap gap-2">
+                                <form action="/pools/{{ pool.id }}/side-bets/{{ side_bet.id }}/submissions/{{ submission_row.submission.id }}/approval" method="post">
+                                  <input type="hidden" name="decision" value="approve" />
+                                  <button class="secondary-action secondary-action--compact">Approve</button>
+                                </form>
+                                <form action="/pools/{{ pool.id }}/side-bets/{{ side_bet.id }}/submissions/{{ submission_row.submission.id }}/approval" method="post">
+                                  <input type="hidden" name="decision" value="reject" />
+                                  <button class="secondary-action secondary-action--compact">Reject</button>
+                                </form>
+                                <form action="/pools/{{ pool.id }}/side-bets/{{ side_bet.id }}/submissions/{{ submission_row.submission.id }}/approval" method="post">
+                                  <input type="hidden" name="decision" value="reset" />
+                                  <button class="secondary-action secondary-action--compact">Reset</button>
+                                </form>
+                              </div>
+                            {% else %}
+                              <span class="text-slate-400">—</span>
+                            {% endif %}
+                          </td>
+                        </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              {% endif %}
+            </section>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="card-surface text-slate-500">No side bets have been created yet.</div>
       {% endif %}
     </section>
   {% else %}
