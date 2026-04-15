@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.auth import decode_session, encode_session
@@ -2001,10 +2001,11 @@ def delete_side_bet(
     side_bet = session.get(SideBet, side_bet_id)
     if not side_bet or side_bet.pool_id != pool_id:
         raise HTTPException(status_code=404, detail="Side bet not found.")
-    for submission in session.scalars(select(SideBetSubmission).where(SideBetSubmission.side_bet_id == side_bet_id)).all():
-        session.delete(submission)
     side_bet_question = side_bet.question
-    session.delete(side_bet)
+    side_bet.is_locked = True
+    session.flush()
+    session.execute(delete(SideBetSubmission).where(SideBetSubmission.side_bet_id == side_bet_id))
+    session.execute(delete(SideBet).where(SideBet.id == side_bet_id, SideBet.pool_id == pool_id))
     session.add(
         EventLog(
             pool_id=pool_id,
@@ -2391,10 +2392,8 @@ def delete_pool(pool_id: str, request: Request, session: Session = Depends(get_s
     session.query(PickSubmission).filter(PickSubmission.window_id.in_(select(BettingWindow.id).where(BettingWindow.pool_id == pool_id))).delete(
         synchronize_session=False
     )
-    session.query(SideBetSubmission).filter(SideBetSubmission.side_bet_id.in_(select(SideBet.id).where(SideBet.pool_id == pool_id))).delete(
-        synchronize_session=False
-    )
-    session.query(SideBet).filter(SideBet.pool_id == pool_id).delete()
+    session.execute(delete(SideBetSubmission).where(SideBetSubmission.side_bet_id.in_(select(SideBet.id).where(SideBet.pool_id == pool_id))))
+    session.execute(delete(SideBet).where(SideBet.pool_id == pool_id))
     session.query(PaymentLedgerEntry).filter(PaymentLedgerEntry.pool_id == pool_id).delete()
     session.query(InviteLink).filter(InviteLink.pool_id == pool_id).delete()
     session.query(BettingWindow).filter(BettingWindow.pool_id == pool_id).delete()

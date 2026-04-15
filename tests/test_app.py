@@ -1159,8 +1159,12 @@ def test_side_bets_tab_supports_create_submit_auto_lock_and_approval() -> None:
 
 def test_commissioner_can_delete_side_bet() -> None:
     commissioner_client = TestClient(app)
+    player_client = TestClient(app)
     pool_url = create_pool(commissioner_client, "Delete Side Bet Pool")
     pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    player_client.post(f"/invite/{invite_token}", data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"}, follow_redirects=False)
 
     create_response = commissioner_client.post(
         f"{pool_url}/side-bets",
@@ -1180,6 +1184,14 @@ def test_commissioner_can_delete_side_bet() -> None:
         assert side_bet is not None
         side_bet_id = side_bet.id
 
+    submit_response = player_client.post(
+        f"{pool_url}/side-bets/{side_bet_id}/submit",
+        data={"answer": "Portland Trail Blazers"},
+        follow_redirects=True,
+    )
+    assert submit_response.status_code == 200
+    assert "Your side-bet answer was saved." in submit_response.text
+
     delete_response = commissioner_client.post(
         f"/pools/{pool_id}/side-bets/{side_bet_id}/delete",
         follow_redirects=True,
@@ -1189,6 +1201,7 @@ def test_commissioner_can_delete_side_bet() -> None:
 
     with SessionLocal() as session:
         assert session.get(SideBet, side_bet_id) is None
+        assert session.scalars(select(SideBetSubmission).where(SideBetSubmission.side_bet_id == side_bet_id)).all() == []
 
 
 def test_deleting_last_side_bet_returns_clean_empty_side_bets_page() -> None:

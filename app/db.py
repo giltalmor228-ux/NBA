@@ -45,6 +45,22 @@ def _ensure_runtime_schema() -> None:
         if "points_value" not in column_names:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE side_bets ADD COLUMN points_value INTEGER NOT NULL DEFAULT 1"))
+    if engine.dialect.name == "postgresql" and inspector.has_table("side_bet_submissions"):
+        for foreign_key in inspector.get_foreign_keys("side_bet_submissions"):
+            constrained = foreign_key.get("constrained_columns") or []
+            referred_table = foreign_key.get("referred_table")
+            options = foreign_key.get("options") or {}
+            if constrained == ["side_bet_id"] and referred_table == "side_bets" and options.get("ondelete") != "CASCADE":
+                constraint_name = foreign_key.get("name") or "side_bet_submissions_side_bet_id_fkey"
+                with engine.begin() as connection:
+                    connection.execute(text(f'ALTER TABLE side_bet_submissions DROP CONSTRAINT IF EXISTS "{constraint_name}"'))
+                    connection.execute(
+                        text(
+                            f'ALTER TABLE side_bet_submissions ADD CONSTRAINT "{constraint_name}" '
+                            "FOREIGN KEY (side_bet_id) REFERENCES side_bets (id) ON DELETE CASCADE"
+                        )
+                    )
+                break
 
 
 def get_session() -> Generator[Session, None, None]:
