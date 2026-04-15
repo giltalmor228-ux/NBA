@@ -43,7 +43,7 @@
         </div>
         <form action="/pools/{{ pool.id }}/resume" method="post" class="grid gap-3">
           <input name="nickname" class="friendly-input" placeholder="Original nickname" required />
-          <input name="email" class="friendly-input" placeholder="Original email if you used one" />
+          <input name="email" class="friendly-input" placeholder="Original email or sign-in identifier" required />
           <button class="primary-action">Sign in to this pool</button>
         </form>
       </div>

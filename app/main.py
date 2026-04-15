@@ -160,6 +160,10 @@ def redirect_with_message(pool_id: str, tab: str, status: str, message: str) -> 
     return f"/pools/{pool_id}?{query}"
 
 
+def _normalize_email(value: str) -> str:
+    return value.strip().lower()
+
+
 def _series_priority(round_key: str, conference: str | None = None) -> int:
     if round_key == "play_in":
         return 0
@@ -1090,6 +1094,7 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
     closed_pick_tables = sorted(closed_pick_tables, key=_matchup_row_sort_key)
     leader_row = leaderboard[0] if leaderboard else None
     leader_message = _latest_leader_message(session, pool_id)
+    members_missing_email = [membership for membership in memberships if not (users.get(membership.user_id) and (users[membership.user_id].email or "").strip()) and not users[membership.user_id].is_monkey]
     return {
         "pool": pool,
         "memberships": memberships,
@@ -1115,6 +1120,7 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
         "matchup_lookup": matchup_lookup,
         "leader_row": leader_row,
         "leader_message": leader_message,
+        "members_missing_email": members_missing_email,
         "bracket_sections": _build_bracket_sections(windows, results),
         "bracket_board": _build_bracket_board(windows, results),
         "tie_break_rules": [
@@ -1398,7 +1404,8 @@ def join_pool(
     invite = session.scalar(select(InviteLink).where(InviteLink.token == token, InviteLink.active.is_(True)))
     if not invite:
         raise HTTPException(status_code=404, detail="Invite link not found.")
-    user = User(email=email or None, nickname=nickname, avatar=avatar)
+    normalized_email = _normalize_email(email)
+    user = User(email=normalized_email or None, nickname=nickname, avatar=avatar)
     session.add(user)
     session.flush()
     membership = Membership(pool_id=invite.pool_id, user_id=user.id, role="player", payout_eligible=True)
@@ -1541,23 +1548,28 @@ def resume_pool_access(
         raise HTTPException(status_code=404, detail="Pool not found.")
 
     normalized_nickname = nickname.strip().lower()
-    normalized_email = email.strip().lower()
+    normalized_email = _normalize_email(email)
+    if not normalized_email:
+        message = "Enter both the original nickname and email to sign in."
+        return RedirectResponse(url=f"{redirect_with_tab(pool_id)}&resume_status=error&resume_message={quote_plus(message)}", status_code=303)
     memberships = session.scalars(select(Membership).where(Membership.pool_id == pool_id)).all()
     candidates: list[tuple[Membership, User]] = []
+    nickname_matches_missing_email = False
     for membership in memberships:
         user = session.get(User, membership.user_id)
         if not user or user.nickname.strip().lower() != normalized_nickname:
             continue
-        if user.email:
-            if normalized_email and user.email.lower() == normalized_email:
-                candidates.append((membership, user))
-            elif not normalized_email:
-                continue
-        else:
+        if not user.email:
+            nickname_matches_missing_email = True
+            continue
+        if user.email.lower() == normalized_email:
             candidates.append((membership, user))
 
     if not candidates:
-        message = "We could not match that member. Use the same nickname, and add the same email if one was used before."
+        if nickname_matches_missing_email:
+            message = "This account does not have an email yet. Ask the commissioner to add an email before signing in."
+        else:
+            message = "We could not match that member. Use the same nickname and the same email that were used before."
         return RedirectResponse(url=f"{redirect_with_tab(pool_id)}&resume_status=error&resume_message={quote_plus(message)}", status_code=303)
 
     if len(candidates) > 1:
@@ -1846,6 +1858,37 @@ def rename_member(
     )
     session.commit()
     return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "success", f"Updated {new_name}."), status_code=303)
+
+
+@app.post("/pools/{pool_id}/members/{member_id}/email")
+def update_member_email(
+    pool_id: str,
+    member_id: str,
+    request: Request,
+    email: str = Form(...),
+    session: Session = Depends(get_session),
+) -> Response:
+    commissioner = require_commissioner(request, session, pool_id)
+    membership = session.get(Membership, member_id)
+    if not membership or membership.pool_id != pool_id:
+        raise HTTPException(status_code=404, detail="Player not found.")
+    user = session.get(User, membership.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Player not found.")
+    normalized_email = _normalize_email(email)
+    if not normalized_email:
+        return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "error", "Email cannot be empty."), status_code=303)
+    user.email = normalized_email
+    session.add(
+        EventLog(
+            pool_id=pool_id,
+            actor_member_id=commissioner.id,
+            event_type="member_email_updated",
+            payload={"member_id": member_id, "email": normalized_email},
+        )
+    )
+    session.commit()
+    return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "success", f"Saved email for {user.nickname}."), status_code=303)
 
 
 @app.post("/pools/{pool_id}/members/{member_id}/delete")

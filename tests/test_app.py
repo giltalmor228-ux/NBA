@@ -481,6 +481,112 @@ def test_join_and_resume_set_persistent_pool_cookie() -> None:
     assert "Max-Age=" in resume_response.headers.get("set-cookie", "")
 
 
+def test_resume_requires_email_and_accepts_case_insensitive_match() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Resume Case Pool")
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    join_response = player_client.post(
+        f"/invite/{invite_token}",
+        data={"nickname": "Avi", "email": "Avi@Example.com", "avatar": "🔥"},
+        follow_redirects=False,
+    )
+    assert join_response.status_code == 303
+
+    player_client.post(f"{pool_url}/signout", follow_redirects=False)
+
+    missing_email_response = player_client.post(
+        f"{pool_url}/resume",
+        data={"nickname": "Avi", "email": ""},
+        follow_redirects=True,
+    )
+    assert missing_email_response.status_code == 200
+    assert "Enter both the original nickname and email to sign in." in missing_email_response.text
+
+    resume_response = player_client.post(
+        f"{pool_url}/resume",
+        data={"nickname": "aVi", "email": "avi@example.COM"},
+        follow_redirects=True,
+    )
+    assert resume_response.status_code == 200
+    assert "Welcome back, Avi. Your access has been restored." in resume_response.text
+    assert "Signed in as" in resume_response.text
+
+
+def test_commissioner_sees_missing_email_warning_and_can_add_email() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Missing Email Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    join_response = player_client.post(
+        f"/invite/{invite_token}",
+        data={"nickname": "NoMail", "email": "", "avatar": "🔥"},
+        follow_redirects=False,
+    )
+    assert join_response.status_code == 303
+
+    commissioner_page = commissioner_client.get(f"{pool_url}?tab=commissioner")
+    assert commissioner_page.status_code == 200
+    assert "missing an email" in commissioner_page.text
+    assert "Email missing" in commissioner_page.text
+
+    with SessionLocal() as session:
+        membership = session.scalar(
+            select(Membership).join(User, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.nickname == "NoMail")
+        )
+        assert membership is not None
+        member_id = membership.id
+
+    update_response = commissioner_client.post(
+        f"/pools/{pool_id}/members/{member_id}/email",
+        data={"email": "nomail@example.com"},
+        follow_redirects=True,
+    )
+    assert update_response.status_code == 200
+    assert "Saved email for NoMail." in update_response.text
+
+    updated_commissioner_page = commissioner_client.get(f"{pool_url}?tab=commissioner")
+    assert updated_commissioner_page.status_code == 200
+    assert "Email missing" not in updated_commissioner_page.text
+    assert "nomail@example.com" in updated_commissioner_page.text
+
+    player_client.post(f"{pool_url}/signout", follow_redirects=False)
+    resume_response = player_client.post(
+        f"{pool_url}/resume",
+        data={"nickname": "nomail", "email": "NOMAIL@example.com"},
+        follow_redirects=True,
+    )
+    assert resume_response.status_code == 200
+    assert "Welcome back, NoMail. Your access has been restored." in resume_response.text
+
+
+def test_sign_in_identifier_does_not_require_at_symbol() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Identifier Pool")
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    join_response = player_client.post(
+        f"/invite/{invite_token}",
+        data={"nickname": "Avi", "email": "avi-login", "avatar": "🔥"},
+        follow_redirects=False,
+    )
+    assert join_response.status_code == 303
+
+    player_client.post(f"{pool_url}/signout", follow_redirects=False)
+
+    resume_response = player_client.post(
+        f"{pool_url}/resume",
+        data={"nickname": "AVI", "email": "AVI-LOGIN"},
+        follow_redirects=True,
+    )
+    assert resume_response.status_code == 200
+    assert "Welcome back, Avi. Your access has been restored." in resume_response.text
+
+
 def test_resume_commissioner_access_restores_betting_window_controls() -> None:
     commissioner_client = TestClient(app)
     viewer_client = TestClient(app)

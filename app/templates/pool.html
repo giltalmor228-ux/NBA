@@ -53,7 +53,7 @@
             <p class="text-sm leading-6">Sign in with the same nickname and email you used before to switch back to any player or to the commissioner account.</p>
             <form action="/pools/{{ pool.id }}/resume" method="post" class="mt-4 grid gap-3">
               <input name="nickname" class="friendly-input" placeholder="Original nickname" required />
-              <input name="email" class="friendly-input" placeholder="Original email if you used one" />
+              <input name="email" class="friendly-input" placeholder="Original email or sign-in identifier" required />
               <button class="primary-action">Sign in to this pool</button>
             </form>
           </div>
@@ -883,19 +883,33 @@
           <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Players</p>
           <h3 class="mt-2 text-2xl font-bold text-slate-900">Manage tournament members</h3>
         </div>
+        {% if members_missing_email %}
+          <div class="rounded-[1.75rem] bg-orange-50 px-5 py-4 text-sm leading-6 text-orange-800">
+            {{ members_missing_email|length }} player{{ "" if members_missing_email|length == 1 else "s" }} {{ "is" if members_missing_email|length == 1 else "are" }} missing an email. Add one below so they can sign back into the pool later.
+          </div>
+        {% endif %}
         <div class="grid gap-4">
           {% for membership in memberships %}
             {% set member_user = users[membership.user_id] %}
             <article class="leaderboard-row">
               <div>
                 <p class="text-lg font-bold text-slate-900">{{ member_user.nickname }}</p>
-                <p class="text-sm text-slate-500">{{ membership.role.title() }}{% if member_user.is_monkey %} • Bot{% endif %}</p>
+                <p class="text-sm text-slate-500">
+                  {{ membership.role.title() }}{% if member_user.is_monkey %} • Bot{% endif %}
+                  {% if not member_user.is_monkey %}
+                    <br />{{ member_user.email or "Email missing" }}
+                  {% endif %}
+                </p>
               </div>
               <div class="flex flex-wrap gap-3">
                 {% if not member_user.is_monkey %}
                   <form action="/pools/{{ pool.id }}/members/{{ membership.id }}/rename" method="post" class="flex flex-wrap gap-2">
                     <input name="nickname" class="friendly-input !w-auto !min-w-[180px]" value="{{ member_user.nickname }}" required />
                     <button class="secondary-action">Rename</button>
+                  </form>
+                  <form action="/pools/{{ pool.id }}/members/{{ membership.id }}/email" method="post" class="flex flex-wrap gap-2">
+                    <input name="email" class="friendly-input !w-auto !min-w-[220px]" value="{{ member_user.email or '' }}" placeholder="Add player email or sign-in identifier" required />
+                    <button class="secondary-action">{{ "Update email" if member_user.email else "Add email" }}</button>
                   </form>
                 {% endif %}
                 {% if membership.role != "commissioner" and not member_user.is_monkey %}
