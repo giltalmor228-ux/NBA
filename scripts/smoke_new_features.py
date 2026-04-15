@@ -102,9 +102,9 @@ def main() -> None:
         "Early Picks",
         "Play-In: Atlanta Hawks vs Orlando Magic",
         "Round 1: Boston Celtics vs New York Knicks",
-        "Round 2: Oklahoma City Thunder vs Denver Nuggets",
-        "Conference Finals: Minnesota Timberwolves vs Los Angeles Lakers",
-        "Finals: Boston Celtics vs Oklahoma City Thunder",
+        "West Semifinal: Oklahoma City Thunder vs Denver Nuggets",
+        "West Conference Finals: Minnesota Timberwolves vs Los Angeles Lakers",
+        "NBA Finals: Boston Celtics vs Oklahoma City Thunder",
     ]
     ordering_positions = [overview_page.text.find(label) for label in ordering_labels]
     ordering_ok = all(position != -1 for position in ordering_positions) and ordering_positions == sorted(ordering_positions)

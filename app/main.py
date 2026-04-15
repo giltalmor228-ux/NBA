@@ -374,10 +374,11 @@ def _ensure_monkey_submission(session: Session, window: BettingWindow) -> None:
     session.add(EventLog(pool_id=window.pool_id, actor_member_id=monkey_member.id, event_type="monkey_submitted", payload={"window_id": window.id}))
 
 
-def _materialize_resolved_windows(session: Session, pool_id: str) -> None:
+def _materialize_resolved_windows(session: Session, pool_id: str) -> bool:
     windows = session.scalars(select(BettingWindow).where(BettingWindow.pool_id == pool_id).order_by(BettingWindow.opens_at)).all()
     results = session.scalars(select(ResultSnapshot).where(ResultSnapshot.pool_id == pool_id).order_by(ResultSnapshot.created_at)).all()
     result_payloads = latest_result_payloads(results)
+    any_changed = False
     for window in windows:
         changed = False
         series_list = []
@@ -397,7 +398,9 @@ def _materialize_resolved_windows(session: Session, pool_id: str) -> None:
         if changed:
             window.config = {**window.config, "series": series_list}
             window.name = updated_name
+            any_changed = True
         _ensure_monkey_submission(session, window)
+    return any_changed
 
 
 def _latest_early_payload(session: Session, pool_id: str) -> dict[str, Any]:
@@ -1018,6 +1021,8 @@ def _delete_membership(session: Session, membership: Membership) -> None:
 
 def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
     if auto_lock_due_windows(session):
+        session.commit()
+    if _materialize_resolved_windows(session, pool_id):
         session.commit()
     pool = session.get(Pool, pool_id)
     memberships = session.scalars(select(Membership).where(Membership.pool_id == pool_id)).all()

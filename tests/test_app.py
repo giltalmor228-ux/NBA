@@ -332,8 +332,8 @@ def test_overview_prioritizes_open_games_by_lock_time() -> None:
 
     page = commissioner_client.get(f"{pool_url}?tab=overview")
     assert page.status_code == 200
-    earlier_index = page.text.find("Earlier Lock Game")
-    later_index = page.text.find("Later Lock Game")
+    earlier_index = page.text.find("West Conference Finals: Oklahoma City Thunder vs Minnesota Timberwolves")
+    later_index = page.text.find("East Round 1: Boston Celtics vs New York Knicks")
     assert earlier_index != -1 and later_index != -1
     assert earlier_index < later_index
 
@@ -1112,6 +1112,38 @@ def test_downstream_window_names_update_after_progression() -> None:
     assert "NBA Finals: Boston Celtics vs Oklahoma City Thunder" in commissioner_page.text
 
 
+def test_load_pool_context_repairs_stale_downstream_window_names() -> None:
+    commissioner_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Stale Names Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    data = {"opens_at": "2026-04-14T12:00", "locks_at": "2026-04-16T19:00"}
+    east = ["BOS", "CLE", "NYK", "DET", "ORL", "PHI", "MIA", "CHA", "ATL", "TOR"]
+    west = ["OKC", "DEN", "MIN", "LAL", "LAC", "GSW", "PHX", "POR", "SAS", "HOU"]
+    for idx, team in enumerate(east, start=1):
+        data[f"east_seed_{idx}"] = team
+    for idx, team in enumerate(west, start=1):
+        data[f"west_seed_{idx}"] = team
+    response = commissioner_client.post(f"{pool_url}/generate-bracket", data=data, follow_redirects=False)
+    assert response.status_code == 303
+
+    west_7v8 = find_window_by_series_key(pool_id, "play_in-west-7v8")
+    west_9v10 = find_window_by_series_key(pool_id, "play_in-west-9v10")
+    west_2v7 = find_window_by_series_key(pool_id, "round_1-west-2v7")
+
+    save_series_result(commissioner_client, pool_url, west_7v8, "POR")
+    with SessionLocal() as session:
+        stale_window = session.get(BettingWindow, west_2v7.id)
+        assert stale_window is not None
+        stale_window.name = "West Round 1: San Antonio Spurs vs West #7"
+        session.commit()
+
+    commissioner_page = commissioner_client.get(f"{pool_url}?tab=commissioner")
+    assert commissioner_page.status_code == 200
+    assert "West Round 1: Denver Nuggets vs Portland Trail Blazers" in commissioner_page.text
+    assert "West Round 1: San Antonio Spurs vs West #7" not in commissioner_page.text
+
+
 def test_full_random_bracket_simulation_through_finals() -> None:
     rng = random.Random(20260413)
     commissioner_client = TestClient(app)
@@ -1493,7 +1525,7 @@ def test_bulk_player_save_persists_valid_games_and_skips_incomplete_ones() -> No
         saved_submission = session.scalar(
             select(PickSubmission).where(
                 PickSubmission.member_id == membership.id,
-                PickSubmission.window_id == find_window_by_name(pool_id, "Round 1: Boston Celtics vs New York Knicks").id,
+                    PickSubmission.window_id == find_window_by_name(pool_id, "East Round 1: Boston Celtics vs New York Knicks").id,
             )
         )
         assert saved_submission is not None
