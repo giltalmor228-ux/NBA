@@ -41,6 +41,7 @@ class Membership(Base):
     pool_id: Mapped[str] = mapped_column(ForeignKey("pools.id"))
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
     role: Mapped[str] = mapped_column(String(32), default="player")
+    side_bet_manager: Mapped[bool] = mapped_column(Boolean, default=False)
     payout_eligible: Mapped[bool] = mapped_column(Boolean, default=True)
     payment_status: Mapped[str] = mapped_column(String(32), default="pending")
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

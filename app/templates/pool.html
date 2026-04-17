@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
 {% set current_user = current_membership and users[current_membership.user_id] %}
-{% set is_commissioner = current_membership and current_membership.role == "commissioner" %}
+{% set is_commissioner = is_commissioner if is_commissioner is defined else (current_membership and current_membership.role == "commissioner") %}
+{% set is_side_bet_manager = is_side_bet_manager if is_side_bet_manager is defined else (current_membership and (current_membership.role == "commissioner" or current_membership.side_bet_manager)) %}
 <div class="space-y-8">
   {% if flash_message %}
     <section class="rounded-[1.75rem] px-5 py-4 text-sm leading-6 {% if flash_status == 'success' %}bg-emerald-50 text-emerald-800{% else %}bg-orange-50 text-orange-800{% endif %}">
@@ -655,10 +656,10 @@
       <div class="card-surface">
         <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Side Bets</p>
         <h3 class="mt-2 text-2xl font-bold text-slate-900">Special pool questions</h3>
-        <p class="mt-3 text-sm leading-6 text-slate-600">Answer each side bet before it locks. Open side bets are shown by the nearest lock time first so nobody misses them. Exact matches against the official answer ignore upper/lower case.</p>
+        <p class="mt-3 text-sm leading-6 text-slate-600">Answer each side bet before it locks.</p>
       </div>
 
-      {% if is_commissioner %}
+      {% if is_side_bet_manager %}
         <section class="card-surface space-y-5">
           <div>
             <p class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Create side bet</p>
@@ -697,10 +698,10 @@
                   <span class="status-pill {% if side_bet.is_locked %}status-pill--locked{% else %}status-pill--open{% endif %}">
                     {{ "Locked" if side_bet.is_locked else "Open now" }}
                   </span>
-                  {% if side_bet.is_locked or is_commissioner %}
+                  {% if side_bet.is_locked or is_side_bet_manager %}
                     <a href="/pools/{{ pool.id }}/side-bets/{{ side_bet.id }}/table" class="pill-link pill-link--secondary">View pick table</a>
                   {% endif %}
-                  {% if is_commissioner %}
+                  {% if is_side_bet_manager %}
                     <form action="/pools/{{ pool.id }}/side-bets/{{ side_bet.id }}/delete" method="post">
                       <button class="secondary-action">Delete</button>
                     </form>
@@ -714,7 +715,7 @@
                 </div>
               {% endif %}
 
-              {% if current_membership and not is_commissioner %}
+              {% if current_membership and current_membership.role != "commissioner" %}
                 <div class="prediction-card space-y-4">
                   <div>
                     <p class="prediction-title">Your answer</p>
@@ -733,7 +734,7 @@
                 </div>
               {% endif %}
 
-              {% if is_commissioner %}
+              {% if is_side_bet_manager %}
                 <div class="grid gap-4 lg:grid-cols-2">
                   <form action="/pools/{{ pool.id }}/side-bets/{{ side_bet.id }}/answer" method="post" class="prediction-card">
                     <p class="prediction-title">Official answer and points</p>
@@ -1064,7 +1065,7 @@
               <div>
                 <p class="text-lg font-bold text-slate-900">{{ member_user.nickname }}</p>
                 <p class="text-sm text-slate-500">
-                  {{ membership.role.title() }}{% if member_user.is_monkey %} • Bot{% endif %}
+                  {{ membership.role.title() }}{% if member_user.is_monkey %} • Bot{% endif %}{% if membership.side_bet_manager and membership.role != "commissioner" %} • Side Bets manager{% endif %}
                   {% if not member_user.is_monkey %}
                     <br />{{ member_user.email or "Email missing" }}
                   {% endif %}
@@ -1080,6 +1081,12 @@
                     <input name="email" class="friendly-input !w-auto !min-w-[220px]" value="{{ member_user.email or '' }}" placeholder="Add player email or sign-in identifier" required />
                     <button class="secondary-action">{{ "Update email" if member_user.email else "Add email" }}</button>
                   </form>
+                  {% if membership.role != "commissioner" %}
+                    <form action="/pools/{{ pool.id }}/members/{{ membership.id }}/side-bet-manager" method="post">
+                      <input type="hidden" name="enabled" value="{{ 'false' if membership.side_bet_manager else 'true' }}" />
+                      <button class="secondary-action">{{ "Remove Side Bets access" if membership.side_bet_manager else "Give Side Bets access" }}</button>
+                    </form>
+                  {% endif %}
                 {% endif %}
                 {% if membership.role != "commissioner" and not member_user.is_monkey %}
                   <form action="/pools/{{ pool.id }}/members/{{ membership.id }}/delete" method="post" onsubmit="return confirm('Remove this player from the tournament?');">

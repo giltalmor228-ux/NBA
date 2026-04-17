@@ -113,6 +113,17 @@ def require_commissioner(request: Request, session: Session, pool_id: str) -> Me
     return membership
 
 
+def can_manage_side_bets(membership: Membership | None) -> bool:
+    return bool(membership and (membership.role == "commissioner" or membership.side_bet_manager))
+
+
+def require_side_bet_manager(request: Request, session: Session, pool_id: str) -> Membership:
+    membership = require_membership(request, session, pool_id)
+    if not can_manage_side_bets(membership):
+        raise HTTPException(status_code=403, detail="Side-bet manager access required.")
+    return membership
+
+
 def parse_iso_datetime(raw: str) -> datetime:
     parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
@@ -1635,9 +1646,13 @@ def pool_detail(pool_id: str, request: Request, session: Session = Depends(get_s
     context = load_pool_context(session, pool_id)
     membership = current_membership(request, session)
     context["current_membership"] = membership if membership and membership.pool_id == pool_id else None
+    context["is_commissioner"] = bool(context["current_membership"] and context["current_membership"].role == "commissioner")
+    context["is_side_bet_manager"] = can_manage_side_bets(context["current_membership"])
     context["leader_can_post"] = bool(context["current_membership"] and context["leader_row"] and context["current_membership"].id == context["leader_row"].member_id)
     active_tab = request.query_params.get("tab", "overview")
     context["active_tab"] = active_tab if active_tab in VALID_POOL_TABS else "overview"
+    if context["active_tab"] == "commissioner" and not context["is_commissioner"]:
+        context["active_tab"] = "overview"
     context["resume_status"] = request.query_params.get("resume_status")
     context["resume_message"] = request.query_params.get("resume_message")
     context["flash_status"] = request.query_params.get("flash_status")
@@ -1814,7 +1829,7 @@ def create_side_bet(
     locks_at: str = Form(...),
     session: Session = Depends(get_session),
 ) -> Response:
-    commissioner = require_commissioner(request, session, pool_id)
+    commissioner = require_side_bet_manager(request, session, pool_id)
     parsed_opens_at = parse_iso_datetime(opens_at)
     parsed_locks_at = parse_iso_datetime(locks_at)
     if parsed_locks_at <= parsed_opens_at:
@@ -1898,7 +1913,7 @@ def update_side_bet_schedule(
     locks_at: str = Form(...),
     session: Session = Depends(get_session),
 ) -> Response:
-    commissioner = require_commissioner(request, session, pool_id)
+    commissioner = require_side_bet_manager(request, session, pool_id)
     side_bet = session.get(SideBet, side_bet_id)
     if not side_bet or side_bet.pool_id != pool_id:
         raise HTTPException(status_code=404, detail="Side bet not found.")
@@ -1930,7 +1945,7 @@ def update_side_bet_answer(
     points_value: str = Form("1"),
     session: Session = Depends(get_session),
 ) -> Response:
-    commissioner = require_commissioner(request, session, pool_id)
+    commissioner = require_side_bet_manager(request, session, pool_id)
     side_bet = session.get(SideBet, side_bet_id)
     if not side_bet or side_bet.pool_id != pool_id:
         raise HTTPException(status_code=404, detail="Side bet not found.")
@@ -1961,7 +1976,7 @@ def update_side_bet_approval(
     decision: str = Form(...),
     session: Session = Depends(get_session),
 ) -> Response:
-    commissioner = require_commissioner(request, session, pool_id)
+    commissioner = require_side_bet_manager(request, session, pool_id)
     side_bet = session.get(SideBet, side_bet_id)
     submission = session.get(SideBetSubmission, submission_id)
     if not side_bet or side_bet.pool_id != pool_id or not submission or submission.side_bet_id != side_bet_id:
@@ -1997,7 +2012,7 @@ def delete_side_bet(
     request: Request,
     session: Session = Depends(get_session),
 ) -> Response:
-    commissioner = require_commissioner(request, session, pool_id)
+    commissioner = require_side_bet_manager(request, session, pool_id)
     side_bet = session.get(SideBet, side_bet_id)
     if not side_bet or side_bet.pool_id != pool_id:
         raise HTTPException(status_code=404, detail="Side bet not found.")
@@ -2030,7 +2045,7 @@ def side_bet_pick_table(
     side_bet = next((item for item in context["side_bets"] if item.id == side_bet_id), None)
     if not side_bet:
         raise HTTPException(status_code=404, detail="Side bet not found.")
-    if not side_bet.is_locked and membership.role != "commissioner":
+    if not side_bet.is_locked and not can_manage_side_bets(membership):
         raise HTTPException(status_code=403, detail="Side-bet answers are visible after the bet locks.")
     table = _build_side_bet_table(
         context["pool"],
@@ -2048,6 +2063,7 @@ def side_bet_pick_table(
             "active_tab": "side_bets",
             "current_membership": membership,
             "is_commissioner": membership.role == "commissioner",
+            "is_side_bet_manager": can_manage_side_bets(membership),
         },
     )
 
@@ -2351,6 +2367,44 @@ def update_member_email(
     )
     session.commit()
     return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "success", f"Saved email for {user.nickname}."), status_code=303)
+
+
+@app.post("/pools/{pool_id}/members/{member_id}/side-bet-manager")
+def update_member_side_bet_manager(
+    pool_id: str,
+    member_id: str,
+    request: Request,
+    enabled: str = Form(...),
+    session: Session = Depends(get_session),
+) -> Response:
+    commissioner = require_commissioner(request, session, pool_id)
+    membership = session.get(Membership, member_id)
+    if not membership or membership.pool_id != pool_id:
+        raise HTTPException(status_code=404, detail="Player not found.")
+    user = session.get(User, membership.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Player not found.")
+    if user.is_monkey:
+        return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "error", "The Monkey cannot manage side bets."), status_code=303)
+    if membership.role == "commissioner":
+        return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "error", "The commissioner already manages side bets."), status_code=303)
+    make_manager = enabled.strip().lower() == "true"
+    membership.side_bet_manager = make_manager
+    session.add(
+        EventLog(
+            pool_id=pool_id,
+            actor_member_id=commissioner.id,
+            event_type="member_side_bet_manager_updated",
+            payload={"member_id": member_id, "enabled": make_manager},
+        )
+    )
+    session.commit()
+    message = (
+        f"{user.nickname} can now manage Side Bets."
+        if make_manager
+        else f"{user.nickname} no longer manages Side Bets."
+    )
+    return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "success", message), status_code=303)
 
 
 @app.post("/pools/{pool_id}/members/{member_id}/delete")

@@ -1157,6 +1157,56 @@ def test_side_bets_tab_supports_create_submit_auto_lock_and_approval() -> None:
     assert "View pick table" in player_side_bets_locked_page.text
 
 
+def test_commissioner_can_delegate_side_bet_management_without_full_commissioner_access() -> None:
+    commissioner_client = TestClient(app)
+    manager_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Side Bet Delegate Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    manager_client.post(f"/invite/{invite_token}", data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"}, follow_redirects=False)
+
+    with SessionLocal() as session:
+        manager_membership = session.scalar(
+            select(Membership).join(User, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.nickname == "Avi")
+        )
+        assert manager_membership is not None
+        manager_membership_id = manager_membership.id
+
+    grant_response = commissioner_client.post(
+        f"/pools/{pool_id}/members/{manager_membership_id}/side-bet-manager",
+        data={"enabled": "true"},
+        follow_redirects=True,
+    )
+    assert grant_response.status_code == 200
+    assert "can now manage Side Bets" in grant_response.text
+
+    manager_side_bets_page = manager_client.get(f"{pool_url}?tab=side_bets")
+    assert manager_side_bets_page.status_code == 200
+    assert "Create side bet" in manager_side_bets_page.text
+    assert "Commissioner</a>" not in manager_side_bets_page.text
+
+    create_response = manager_client.post(
+        f"{pool_url}/side-bets",
+        data={
+            "question": "Who wins tip-off?",
+            "answer": "Portland Trail Blazers",
+            "points_value": "2",
+            "opens_at": "2026-04-15T12:00",
+            "locks_at": "2026-04-16T15:00",
+        },
+        follow_redirects=True,
+    )
+    assert create_response.status_code == 200
+    assert "Side bet created." in create_response.text
+    assert "Who wins tip-off?" in create_response.text
+    assert "View pick table" in create_response.text
+
+    manager_commissioner_page = manager_client.get(f"{pool_url}?tab=commissioner")
+    assert manager_commissioner_page.status_code == 200
+    assert "Create a betting window" not in manager_commissioner_page.text
+
+
 def test_commissioner_can_delete_side_bet() -> None:
     commissioner_client = TestClient(app)
     player_client = TestClient(app)

@@ -40,6 +40,11 @@ def init_db() -> None:
 
 def _ensure_runtime_schema() -> None:
     inspector = inspect(engine)
+    if inspector.has_table("memberships"):
+        column_names = {column["name"] for column in inspector.get_columns("memberships")}
+        if "side_bet_manager" not in column_names:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE memberships ADD COLUMN side_bet_manager BOOLEAN NOT NULL DEFAULT FALSE"))
     if inspector.has_table("side_bets"):
         column_names = {column["name"] for column in inspector.get_columns("side_bets")}
         if "points_value" not in column_names:
