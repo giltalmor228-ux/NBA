@@ -87,11 +87,27 @@
             </div>
             <span class="text-sm text-slate-500">Click any player to open their stats and locked picks.</span>
           </div>
-          {% if leader_message %}
-            <div class="mt-5 rounded-[1.75rem] bg-[#fff4c8] px-6 py-5 text-slate-900 shadow-sm">
-              <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">First-place spotlight</p>
-              <p class="mt-2 text-xl font-black">{{ leader_message.display_name }}</p>
-              <p class="mt-3 text-base font-semibold leading-7">{{ leader_message.message }}</p>
+          {% if leader_message or last_place_spotlight %}
+            <div class="mt-5 grid gap-5 xl:grid-cols-2">
+              {% if leader_message %}
+                <div class="rounded-[1.75rem] bg-[#fff4c8] px-6 py-5 text-slate-900 shadow-sm">
+                  <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">First-place spotlight</p>
+                  <p class="mt-2 text-xl font-black">{{ leader_message.display_name }}</p>
+                  <p class="mt-3 text-base font-semibold leading-7">{{ leader_message.message }}</p>
+                </div>
+              {% endif %}
+              {% if last_place_spotlight %}
+                <div class="rounded-[1.75rem] bg-[#ffe8e0] px-6 py-5 text-slate-900 shadow-sm">
+                  <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Last-place spotlight</p>
+                  <p class="mt-2 text-xl font-black">Congratulations to the loser in the last place</p>
+                  <p class="mt-2 text-base font-semibold leading-7">{{ last_place_spotlight.display_name }}</p>
+                  <img
+                    src="{{ last_place_spotlight.image_url }}"
+                    alt="{{ last_place_spotlight.display_name }} spotlight image"
+                    class="mt-4 h-80 w-full rounded-[1.5rem] bg-white/70 object-contain p-2 shadow-sm md:h-96"
+                  />
+                </div>
+              {% endif %}
             </div>
           {% endif %}
           {% if leader_can_post %}
@@ -1087,6 +1103,13 @@
                       <button class="secondary-action">{{ "Remove Side Bets access" if membership.side_bet_manager else "Give Side Bets access" }}</button>
                     </form>
                   {% endif %}
+                  <form action="/pools/{{ pool.id }}/members/{{ membership.id }}/loser-photo" method="post" enctype="multipart/form-data" class="flex flex-wrap items-center gap-2">
+                    {% if member_user.loser_photo_path %}
+                      <img src="{{ member_user.loser_photo_path }}" alt="{{ member_user.nickname }} loser spotlight preview" class="h-12 w-12 rounded-2xl object-cover shadow-sm" />
+                    {% endif %}
+                    <input name="photo" type="file" accept="image/*" class="friendly-input !w-auto !min-w-[240px]" required />
+                    <button class="secondary-action">{{ "Update loser photo" if member_user.loser_photo_path else "Upload loser photo" }}</button>
+                  </form>
                 {% endif %}
                 {% if membership.role != "commissioner" and not member_user.is_monkey %}
                   <form action="/pools/{{ pool.id }}/members/{{ membership.id }}/delete" method="post" onsubmit="return confirm('Remove this player from the tournament?');">

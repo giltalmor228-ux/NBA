@@ -30,6 +30,7 @@ class User(Base):
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     nickname: Mapped[str] = mapped_column(String(80))
     avatar: Mapped[str] = mapped_column(String(16), default="🏀")
+    loser_photo_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_monkey: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

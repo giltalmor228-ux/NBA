@@ -45,6 +45,11 @@ def _ensure_runtime_schema() -> None:
         if "side_bet_manager" not in column_names:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE memberships ADD COLUMN side_bet_manager BOOLEAN NOT NULL DEFAULT FALSE"))
+    if inspector.has_table("users"):
+        column_names = {column["name"] for column in inspector.get_columns("users")}
+        if "loser_photo_path" not in column_names:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE users ADD COLUMN loser_photo_path VARCHAR(255)"))
     if inspector.has_table("side_bets"):
         column_names = {column["name"] for column in inspector.get_columns("side_bets")}
         if "points_value" not in column_names:

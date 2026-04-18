@@ -32,6 +32,15 @@ BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 settings = get_settings()
 LOCAL_TZ = ZoneInfo("Asia/Jerusalem")
+LOSER_SPOTLIGHT_UPLOAD_DIR = BASE_DIR / "static" / "uploads" / "loser-photos"
+MAX_LOSER_SPOTLIGHT_IMAGE_BYTES = 5 * 1024 * 1024
+IMAGE_CONTENT_TYPE_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
 
 TEAM_NAMES = {team.code: team.name for team in TEAM_CATALOG}
 TEAM_SELECT_GROUPS = all_teams_grouped_for_select()
@@ -151,6 +160,31 @@ def localize_datetime_display(value: datetime) -> str:
 
 templates.env.globals["localize_datetime_display"] = localize_datetime_display
 templates.env.globals["localize_datetime_input"] = localize_datetime_input
+
+
+def _ensure_loser_spotlight_upload_dir() -> None:
+    LOSER_SPOTLIGHT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _spotlight_upload_relative_path(filename: str) -> str:
+    return f"/static/uploads/loser-photos/{filename}"
+
+
+def _delete_loser_spotlight_file(relative_path: str | None) -> None:
+    if not relative_path:
+        return
+    prefix = "/static/uploads/loser-photos/"
+    if not relative_path.startswith(prefix):
+        return
+    candidate = LOSER_SPOTLIGHT_UPLOAD_DIR / Path(relative_path).name
+    candidate.unlink(missing_ok=True)
+
+
+def _upload_extension(photo: UploadFile) -> str | None:
+    filename_suffix = Path(photo.filename or "").suffix.lower()
+    if filename_suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
+        return ".jpg" if filename_suffix == ".jpeg" else filename_suffix
+    return IMAGE_CONTENT_TYPE_EXTENSIONS.get((photo.content_type or "").lower())
 
 
 def generated_window_name(round_key: str, team_one: str, team_two: str) -> str:
@@ -1274,6 +1308,7 @@ def _delete_membership(session: Session, membership: Membership) -> None:
     if not remaining_membership:
         user = session.get(User, user_id)
         if user:
+            _delete_loser_spotlight_file(user.loser_photo_path)
             session.delete(user)
 
 
@@ -1396,8 +1431,20 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
     early_result_state = _latest_early_payload(session, pool_id)
     closed_pick_tables, matchup_lookup = _build_pick_tables(windows, memberships, users, submissions, results, leaderboard)
     closed_pick_tables = sorted(closed_pick_tables, key=_matchup_row_sort_key)
+    memberships_by_id = {membership.id: membership for membership in memberships}
     leader_row = leaderboard[0] if leaderboard else None
+    last_place_row = leaderboard[-1] if leaderboard else None
     leader_message = _latest_leader_message(session, pool_id)
+    last_place_spotlight = None
+    if last_place_row:
+        last_place_membership = memberships_by_id.get(last_place_row.member_id)
+        last_place_user = users.get(last_place_membership.user_id) if last_place_membership else None
+        if last_place_user and last_place_user.loser_photo_path:
+            last_place_spotlight = {
+                "member_id": last_place_row.member_id,
+                "display_name": last_place_user.nickname,
+                "image_url": last_place_user.loser_photo_path,
+            }
     members_missing_email = [membership for membership in memberships if not (users.get(membership.user_id) and (users[membership.user_id].email or "").strip()) and not users[membership.user_id].is_monkey]
     side_bet_rows = []
     for side_bet in sorted(side_bets, key=lambda item: (1 if item.is_locked else 0, item.locks_at, item.opens_at, item.created_at)):
@@ -1457,7 +1504,9 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
         "closed_pick_tables": closed_pick_tables,
         "matchup_lookup": matchup_lookup,
         "leader_row": leader_row,
+        "last_place_row": last_place_row,
         "leader_message": leader_message,
+        "last_place_spotlight": last_place_spotlight,
         "members_missing_email": members_missing_email,
         "side_bets": side_bets,
         "side_bet_rows": side_bet_rows,
@@ -2495,6 +2544,53 @@ def update_member_email(
     return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "success", f"Saved email for {user.nickname}."), status_code=303)
 
 
+@app.post("/pools/{pool_id}/members/{member_id}/loser-photo")
+async def upload_member_loser_photo(
+    pool_id: str,
+    member_id: str,
+    request: Request,
+    photo: UploadFile = File(...),
+    session: Session = Depends(get_session),
+) -> Response:
+    commissioner = require_commissioner(request, session, pool_id)
+    membership = session.get(Membership, member_id)
+    if not membership or membership.pool_id != pool_id:
+        raise HTTPException(status_code=404, detail="Player not found.")
+    user = session.get(User, membership.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Player not found.")
+    if user.is_monkey:
+        return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "error", "The Monkey cannot receive a loser spotlight photo."), status_code=303)
+    extension = _upload_extension(photo)
+    if not extension:
+        return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "error", "Upload a PNG, JPG, WEBP, or GIF image."), status_code=303)
+    content = await photo.read()
+    await photo.close()
+    if not content:
+        return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "error", "Choose an image before uploading."), status_code=303)
+    if len(content) > MAX_LOSER_SPOTLIGHT_IMAGE_BYTES:
+        return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "error", "Image must be 5 MB or smaller."), status_code=303)
+    _ensure_loser_spotlight_upload_dir()
+    filename = f"{user.id}-{secrets.token_hex(8)}{extension}"
+    file_path = LOSER_SPOTLIGHT_UPLOAD_DIR / filename
+    file_path.write_bytes(content)
+    _delete_loser_spotlight_file(user.loser_photo_path)
+    user.loser_photo_path = _spotlight_upload_relative_path(filename)
+    session.add(
+        EventLog(
+            pool_id=pool_id,
+            actor_member_id=commissioner.id,
+            event_type="member_loser_photo_updated",
+            payload={"member_id": member_id, "photo_path": user.loser_photo_path},
+        )
+    )
+    session.commit()
+    return RedirectResponse(
+        url=redirect_with_message(pool_id, "commissioner", "success", f"Saved last-place spotlight image for {user.nickname}."),
+        status_code=303,
+    )
+
+
 @app.post("/pools/{pool_id}/members/{member_id}/side-bet-manager")
 def update_member_side_bet_manager(
     pool_id: str,
@@ -2585,6 +2681,7 @@ def delete_pool(pool_id: str, request: Request, session: Session = Depends(get_s
         if not session.scalar(select(Membership).where(Membership.user_id == user_id)):
             user = session.get(User, user_id)
             if user:
+                _delete_loser_spotlight_file(user.loser_photo_path)
                 session.delete(user)
     session.delete(pool)
     session.commit()

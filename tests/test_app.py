@@ -23,6 +23,12 @@ from app.models import BettingWindow, Membership, PickSubmission, ResultSnapshot
 
 init_db()
 
+PNG_1X1 = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc`\x00\x01"
+    b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
 
 def create_pool(client: TestClient, name: str) -> str:
     response = client.post(
@@ -1995,6 +2001,70 @@ def test_commissioner_can_manage_members_and_delete_pool() -> None:
     homepage = commissioner_client.get(pool_delete.headers["location"])
     assert homepage.status_code == 200
     assert "Manage Pool" not in homepage.text
+
+
+def test_commissioner_can_upload_last_place_spotlight_photo() -> None:
+    commissioner_client = TestClient(app)
+    amy_client = TestClient(app)
+    zulu_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Last Place Spotlight Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    amy_client.post(f"/invite/{invite_token}", data={"nickname": "Amy", "email": "amy@example.com", "avatar": "🔥"}, follow_redirects=False)
+    zulu_client.post(f"/invite/{invite_token}", data={"nickname": "Zulu", "email": "zulu@example.com", "avatar": "😅"}, follow_redirects=False)
+
+    early_window = find_window_by_name(pool_id, "Early Picks")
+    conference_map = teams_by_conference()
+    east_teams = [team.code for team in conference_map["East"]]
+    west_teams = [team.code for team in conference_map["West"]]
+    finals_mvp = players_for_teams([east_teams[0], west_teams[0]])[0]
+    commissioner_client.post(
+        f"{pool_url}/windows/{early_window.id}/submit",
+        data={
+            "conference_finalists_east": east_teams[0],
+            "conference_finalists_west": west_teams[1],
+            "nba_finalists_east": east_teams[0],
+            "nba_finalists_west": west_teams[0],
+            "champion": east_teams[0],
+            "finals_mvp": finals_mvp,
+        },
+        follow_redirects=False,
+    )
+    commissioner_client.post(f"{pool_url}/results/early-field", data={"field_name": "conference_finalists_east", "field_value": east_teams[0]}, follow_redirects=False)
+    commissioner_client.post(f"{pool_url}/results/early-field", data={"field_name": "conference_finalists_west", "field_value": west_teams[1]}, follow_redirects=False)
+    commissioner_client.post(f"{pool_url}/results/early-field", data={"field_name": "nba_finalists_east", "field_value": east_teams[0]}, follow_redirects=False)
+    commissioner_client.post(f"{pool_url}/results/early-field", data={"field_name": "nba_finalists_west", "field_value": west_teams[0]}, follow_redirects=False)
+    commissioner_client.post(f"{pool_url}/results/early-field", data={"field_name": "champion", "field_value": east_teams[0]}, follow_redirects=False)
+    commissioner_client.post(f"{pool_url}/results/early-field", data={"field_name": "finals_mvp", "field_value": finals_mvp}, follow_redirects=False)
+    with SessionLocal() as session:
+        zulu_membership = session.scalar(
+            select(Membership).join(User, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.nickname == "Zulu")
+        )
+        assert zulu_membership is not None
+        zulu_member_id = zulu_membership.id
+
+    upload_response = commissioner_client.post(
+        f"/pools/{pool_id}/members/{zulu_member_id}/loser-photo",
+        files={"photo": ("zulu.png", PNG_1X1, "image/png")},
+        follow_redirects=True,
+    )
+    assert upload_response.status_code == 200
+    assert "Saved last-place spotlight image for Zulu." in upload_response.text
+
+    overview_response = commissioner_client.get(f"{pool_url}?tab=overview")
+    assert overview_response.status_code == 200
+    assert "Congratulations to the loser in the last place" in overview_response.text
+    assert "Zulu" in overview_response.text
+    assert "/static/uploads/loser-photos/" in overview_response.text
+
+    with SessionLocal() as session:
+        zulu_user = session.scalar(select(User).join(Membership, Membership.user_id == User.id).where(Membership.id == zulu_member_id))
+        assert zulu_user is not None
+        assert zulu_user.loser_photo_path
+        saved_file = Path("app/static") / zulu_user.loser_photo_path.removeprefix("/static/")
+        assert saved_file.exists()
+        saved_file.unlink(missing_ok=True)
 
 
 def test_overview_ordering_saved_banners_and_player_missing_picks() -> None:
