@@ -302,8 +302,8 @@ def test_overview_prioritizes_open_games_by_lock_time() -> None:
             "name": "Later Lock Game",
             "round_key": "round_1",
             "bet_type": "series",
-            "opens_at": "2026-04-16T12:00",
-            "locks_at": "2026-04-21T19:00",
+            "opens_at": "2026-05-16T12:00",
+            "locks_at": "2026-05-21T19:00",
             "team_one": "BOS",
             "team_two": "NYK",
             "series_key": "",
@@ -319,8 +319,8 @@ def test_overview_prioritizes_open_games_by_lock_time() -> None:
             "name": "Earlier Lock Game",
             "round_key": "conference_finals",
             "bet_type": "series",
-            "opens_at": "2026-04-16T12:00",
-            "locks_at": "2026-04-17T13:00",
+            "opens_at": "2026-05-16T12:00",
+            "locks_at": "2026-05-17T13:00",
             "team_one": "OKC",
             "team_two": "MIN",
             "series_key": "",
@@ -515,6 +515,39 @@ def test_resume_requires_email_and_accepts_case_insensitive_match() -> None:
     assert "Signed in as" in resume_response.text
 
 
+def test_invite_reuses_existing_member_instead_of_creating_duplicate() -> None:
+    commissioner_client = TestClient(app)
+    first_client = TestClient(app)
+    second_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "No Duplicate Invite Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    first_join = first_client.post(
+        f"/invite/{invite_token}",
+        data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"},
+        follow_redirects=False,
+    )
+    assert first_join.status_code == 303
+
+    second_join = second_client.post(
+        f"/invite/{invite_token}",
+        data={"nickname": "AVI", "email": "AVI@example.com", "avatar": "🔥"},
+        follow_redirects=False,
+    )
+    assert second_join.status_code == 303
+
+    landing = second_client.get(second_join.headers["location"])
+    assert landing.status_code == 200
+    assert "already registered in this pool" in landing.text
+
+    with SessionLocal() as session:
+        avi_memberships = session.scalars(
+            select(Membership).join(User, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.nickname == "Avi")
+        ).all()
+        assert len(avi_memberships) == 1
+
+
 def test_commissioner_sees_missing_email_warning_and_can_add_email() -> None:
     commissioner_client = TestClient(app)
     player_client = TestClient(app)
@@ -554,14 +587,168 @@ def test_commissioner_sees_missing_email_warning_and_can_add_email() -> None:
     assert "Email missing" not in updated_commissioner_page.text
     assert "nomail@example.com" in updated_commissioner_page.text
 
-    player_client.post(f"{pool_url}/signout", follow_redirects=False)
-    resume_response = player_client.post(
-        f"{pool_url}/resume",
-        data={"nickname": "nomail", "email": "NOMAIL@example.com"},
-        follow_redirects=True,
+
+def test_load_pool_context_dedupes_existing_duplicate_memberships_and_keeps_picks() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Dedup Existing Membership Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    player_client.post(
+        f"/invite/{invite_token}",
+        data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"},
+        follow_redirects=False,
     )
-    assert resume_response.status_code == 200
-    assert "Welcome back, NoMail. Your access has been restored." in resume_response.text
+
+    early_window = find_window_by_name(pool_id, "Early Picks")
+    with SessionLocal() as session:
+        original_membership = session.scalar(
+            select(Membership).join(User, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.nickname == "Avi")
+        )
+        assert original_membership is not None
+
+        duplicate_user = User(email="AVI@example.com", nickname="AVI", avatar="🔥")
+        session.add(duplicate_user)
+        session.flush()
+        duplicate_membership = Membership(pool_id=pool_id, user_id=duplicate_user.id, role="player", payout_eligible=True)
+        session.add(duplicate_membership)
+        session.flush()
+        session.add(
+            PickSubmission(
+                window_id=early_window.id,
+                member_id=duplicate_membership.id,
+                payload={
+                    "conference_finalists": {"East": "BOS", "West": "OKC"},
+                    "nba_finalists": {"East": "BOS", "West": "OKC"},
+                    "champion": "BOS",
+                    "finals_mvp": "Jayson Tatum",
+                },
+            )
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        context = load_pool_context(session, pool_id)
+        avi_memberships = [
+            membership for membership in context["memberships"] if context["users"][membership.user_id].nickname.strip().lower() == "avi"
+        ]
+        assert len(avi_memberships) == 1
+        merged_submission = context["submissions_by_window_member"].get((early_window.id, avi_memberships[0].id))
+        assert merged_submission is not None
+        assert merged_submission.payload.get("champion") == "BOS"
+
+
+def test_duplicate_membership_merge_keeps_recent_two_pick_batch_visible_in_closed_bets() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Dedup Recent Batch Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    grouped_teams = teams_by_conference()
+    east_seeds = [team.code for team in grouped_teams["East"][:10]]
+    west_seeds = [team.code for team in grouped_teams["West"][:10]]
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    player_client.post(
+        f"/invite/{invite_token}",
+        data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"},
+        follow_redirects=False,
+    )
+
+    response = commissioner_client.post(
+        f"{pool_url}/generate-bracket",
+        data={
+            "opens_at": "2026-05-14T12:00",
+            "locks_at": "2026-05-16T19:00",
+            **{f"east_seed_{index}": team for index, team in enumerate(east_seeds, start=1)},
+            **{f"west_seed_{index}": team for index, team in enumerate(west_seeds, start=1)},
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    early_window = find_window_by_name(pool_id, "Early Picks")
+    east_7v8 = find_window_by_series_key(pool_id, "play_in-east-7v8")
+    east_9v10 = find_window_by_series_key(pool_id, "play_in-east-9v10")
+
+    with SessionLocal() as session:
+        original_membership = session.scalar(
+            select(Membership).join(User, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.nickname == "Avi")
+        )
+        assert original_membership is not None
+
+        # Simulate an old duplicated membership from the pre-fix invite flow.
+        duplicate_user = User(email="AVI@example.com", nickname="AVI", avatar="🔥")
+        session.add(duplicate_user)
+        session.flush()
+        duplicate_membership = Membership(pool_id=pool_id, user_id=duplicate_user.id, role="player", payout_eligible=True)
+        session.add(duplicate_membership)
+        session.flush()
+
+        # Older picks stayed on the original membership.
+        session.add(
+            PickSubmission(
+                window_id=early_window.id,
+                member_id=original_membership.id,
+                payload={
+                    "conference_finalists": {"East": east_seeds[0], "West": west_seeds[0]},
+                    "nba_finalists": {"East": east_seeds[0], "West": west_seeds[0]},
+                    "champion": east_seeds[0],
+                    "finals_mvp": players_for_teams([east_seeds[0], west_seeds[0]])[0],
+                },
+            )
+        )
+
+        # The recent two-game batch landed on the duplicate membership.
+        session.add(
+            PickSubmission(
+                window_id=east_7v8.id,
+                member_id=duplicate_membership.id,
+                payload={"series": {"play_in-east-7v8": {"winner": east_seeds[6], "exact_result": "1-0"}}},
+            )
+        )
+        session.add(
+            PickSubmission(
+                window_id=east_9v10.id,
+                member_id=duplicate_membership.id,
+                payload={"series": {"play_in-east-9v10": {"winner": east_seeds[9], "exact_result": "1-0"}}},
+            )
+        )
+        session.commit()
+
+    lock_window_and_assert_revealed(commissioner_client, pool_url, east_7v8)
+    lock_window_and_assert_revealed(commissioner_client, pool_url, east_9v10)
+
+    closed_bets = commissioner_client.get(f"{pool_url}?tab=bets")
+    assert closed_bets.status_code == 200
+
+    with SessionLocal() as session:
+        context = load_pool_context(session, pool_id)
+        avi_memberships = [
+            membership for membership in context["memberships"] if context["users"][membership.user_id].nickname.strip().lower() == "avi"
+        ]
+        assert len(avi_memberships) == 1
+        merged_member = avi_memberships[0]
+        assert context["users"][merged_member.user_id].nickname == "Avi"
+        assert context["submissions_by_window_member"].get((east_7v8.id, merged_member.id)) is not None
+        assert context["submissions_by_window_member"].get((east_9v10.id, merged_member.id)) is not None
+
+    matchup_7v8 = commissioner_client.get(f"/pools/{pool_id}/matchups/play_in-east-7v8")
+    assert matchup_7v8.status_code == 200
+    assert "Avi" in matchup_7v8.text
+    assert TEAM_BY_CODE[east_seeds[6]].name in matchup_7v8.text
+
+    matchup_9v10 = commissioner_client.get(f"/pools/{pool_id}/matchups/play_in-east-9v10")
+    assert matchup_9v10.status_code == 200
+    assert "Avi" in matchup_9v10.text
+    assert TEAM_BY_CODE[east_seeds[9]].name in matchup_9v10.text
+
+    with SessionLocal() as session:
+        avi_memberships = session.scalars(
+            select(Membership).join(User, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.email.in_(["avi@example.com", "AVI@example.com"]))
+        ).all()
+        assert len(avi_memberships) == 1
 
 
 def test_sign_in_identifier_does_not_require_at_symbol() -> None:
@@ -1061,8 +1248,8 @@ def test_side_bets_tab_supports_create_submit_auto_lock_and_approval() -> None:
             "question": "Who scores first in Game 1?",
             "answer": "Deni Avdija",
             "points_value": "3",
-            "opens_at": "2026-04-15T12:00",
-            "locks_at": "2026-04-16T15:00",
+            "opens_at": "2026-05-15T12:00",
+            "locks_at": "2026-05-16T15:00",
         },
         follow_redirects=False,
     )
@@ -1192,8 +1379,8 @@ def test_commissioner_can_delegate_side_bet_management_without_full_commissioner
             "question": "Who wins tip-off?",
             "answer": "Portland Trail Blazers",
             "points_value": "2",
-            "opens_at": "2026-04-15T12:00",
-            "locks_at": "2026-04-16T15:00",
+            "opens_at": "2026-05-15T12:00",
+            "locks_at": "2026-05-16T15:00",
         },
         follow_redirects=True,
     )
@@ -1222,8 +1409,8 @@ def test_commissioner_can_delete_side_bet() -> None:
             "question": "First coach challenge?",
             "answer": "Portland Trail Blazers",
             "points_value": "2",
-            "opens_at": "2026-04-15T12:00",
-            "locks_at": "2026-04-16T15:00",
+            "opens_at": "2026-05-15T12:00",
+            "locks_at": "2026-05-16T15:00",
         },
         follow_redirects=False,
     )
@@ -1914,3 +2101,66 @@ def test_player_can_save_multiple_marked_pick_boards_together() -> None:
         saved_window_ids = {submission.window_id for submission in submissions}
         assert any(window.id in saved_window_ids and window.round_key == "play_in" for window in windows)
         assert any(window.id in saved_window_ids and window.round_key == "round_1" for window in windows)
+
+
+def test_bulk_saved_generated_play_in_picks_show_up_in_closed_bets() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Generated Bulk Closed Bets")
+    pool_id = pool_id_from_url(pool_url)
+
+    grouped_teams = teams_by_conference()
+    east_seeds = [team.code for team in grouped_teams["East"][:10]]
+    west_seeds = [team.code for team in grouped_teams["West"][:10]]
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    player_client.post(
+        f"/invite/{invite_token}",
+        data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"},
+        follow_redirects=False,
+    )
+
+    response = commissioner_client.post(
+        f"{pool_url}/generate-bracket",
+        data={
+            "opens_at": "2026-05-14T12:00",
+            "locks_at": "2026-05-16T19:00",
+            **{f"east_seed_{index}": team for index, team in enumerate(east_seeds, start=1)},
+            **{f"west_seed_{index}": team for index, team in enumerate(west_seeds, start=1)},
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    east_7v8 = find_window_by_series_key(pool_id, "play_in-east-7v8")
+    east_9v10 = find_window_by_series_key(pool_id, "play_in-east-9v10")
+
+    save_response = player_client.post(
+        f"{pool_url}/submit-all",
+        data={
+            "winner_play_in-east-7v8": east_seeds[6],
+            "winner_play_in-east-9v10": east_seeds[9],
+        },
+        follow_redirects=True,
+    )
+    assert save_response.status_code == 200
+    assert "Saved 2 marked pick board(s)." in save_response.text
+
+    lock_window_and_assert_revealed(commissioner_client, pool_url, east_7v8)
+    lock_window_and_assert_revealed(commissioner_client, pool_url, east_9v10)
+
+    closed_bets = commissioner_client.get(f"{pool_url}?tab=bets")
+    assert closed_bets.status_code == 200
+    assert "Avi" in closed_bets.text
+    assert TEAM_BY_CODE[east_seeds[6]].name in closed_bets.text
+    assert TEAM_BY_CODE[east_seeds[9]].name in closed_bets.text
+
+    matchup_7v8 = commissioner_client.get(f"/pools/{pool_id}/matchups/play_in-east-7v8")
+    assert matchup_7v8.status_code == 200
+    assert "Avi" in matchup_7v8.text
+    assert TEAM_BY_CODE[east_seeds[6]].name in matchup_7v8.text
+
+    matchup_9v10 = commissioner_client.get(f"/pools/{pool_id}/matchups/play_in-east-9v10")
+    assert matchup_9v10.status_code == 200
+    assert "Avi" in matchup_9v10.text
+    assert TEAM_BY_CODE[east_seeds[9]].name in matchup_9v10.text

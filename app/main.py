@@ -176,6 +176,10 @@ def _normalize_email(value: str) -> str:
     return value.strip().lower()
 
 
+def _normalize_nickname(value: str) -> str:
+    return value.strip().lower()
+
+
 def _normalize_side_bet_answer(value: str | None) -> str:
     return " ".join((value or "").strip().casefold().split())
 
@@ -194,6 +198,117 @@ def _parse_side_bet_points(raw_value: str) -> int:
     if points <= 0:
         raise ValueError("Points must be greater than zero.")
     return points
+
+
+def _find_existing_membership_for_identity(session: Session, pool_id: str, nickname: str, email: str) -> tuple[Membership, User] | None:
+    normalized_nickname = _normalize_nickname(nickname)
+    normalized_email = _normalize_email(email)
+    if not normalized_nickname or not normalized_email:
+        return None
+    memberships = session.scalars(select(Membership).where(Membership.pool_id == pool_id)).all()
+    for membership in memberships:
+        user = session.get(User, membership.user_id)
+        if not user or user.is_monkey:
+            continue
+        if _normalize_nickname(user.nickname) == normalized_nickname and _normalize_email(user.email or "") == normalized_email:
+            return membership, user
+    return None
+
+
+def _merge_duplicate_membership(session: Session, primary: Membership, duplicate: Membership) -> None:
+    primary_user = session.get(User, primary.user_id)
+    duplicate_user = session.get(User, duplicate.user_id)
+
+    if primary.role != "commissioner" and duplicate.role == "commissioner":
+        primary.role = "commissioner"
+    primary.side_bet_manager = primary.side_bet_manager or duplicate.side_bet_manager
+    primary.payout_eligible = primary.payout_eligible or duplicate.payout_eligible
+    if primary.payment_status != "paid" and duplicate.payment_status == "paid":
+        primary.payment_status = "paid"
+    elif primary.payment_status in {"pending", ""} and duplicate.payment_status not in {"", "pending"}:
+        primary.payment_status = duplicate.payment_status
+
+    if primary_user and duplicate_user:
+        if not (primary_user.email or "").strip() and (duplicate_user.email or "").strip():
+            primary_user.email = duplicate_user.email
+        if not primary_user.nickname.strip() and duplicate_user.nickname.strip():
+            primary_user.nickname = duplicate_user.nickname
+
+    primary_submissions = {item.window_id: item for item in session.scalars(select(PickSubmission).where(PickSubmission.member_id == primary.id)).all()}
+    for submission in session.scalars(select(PickSubmission).where(PickSubmission.member_id == duplicate.id)).all():
+        existing = primary_submissions.get(submission.window_id)
+        if not existing:
+            submission.member_id = primary.id
+            primary_submissions[submission.window_id] = submission
+            continue
+        existing_time = existing.submitted_at or datetime.min.replace(tzinfo=timezone.utc)
+        duplicate_time = submission.submitted_at or datetime.min.replace(tzinfo=timezone.utc)
+        if duplicate_time >= existing_time:
+            existing.payload = submission.payload
+            existing.submitted_at = submission.submitted_at
+        session.delete(submission)
+
+    primary_side_bets = {item.side_bet_id: item for item in session.scalars(select(SideBetSubmission).where(SideBetSubmission.member_id == primary.id)).all()}
+    for submission in session.scalars(select(SideBetSubmission).where(SideBetSubmission.member_id == duplicate.id)).all():
+        existing = primary_side_bets.get(submission.side_bet_id)
+        if not existing:
+            submission.member_id = primary.id
+            primary_side_bets[submission.side_bet_id] = submission
+            continue
+        existing_time = existing.submitted_at or datetime.min.replace(tzinfo=timezone.utc)
+        duplicate_time = submission.submitted_at or datetime.min.replace(tzinfo=timezone.utc)
+        if duplicate_time >= existing_time:
+            existing.answer = submission.answer
+            existing.submitted_at = submission.submitted_at
+            existing.approved = submission.approved
+            existing.approved_at = submission.approved_at
+            existing.approved_by_member_id = submission.approved_by_member_id
+        session.delete(submission)
+
+    session.query(EventLog).filter(EventLog.actor_member_id == duplicate.id).update({"actor_member_id": primary.id})
+    session.query(ResultSnapshot).filter(ResultSnapshot.created_by_member_id == duplicate.id).update({"created_by_member_id": primary.id})
+    session.query(PaymentLedgerEntry).filter(PaymentLedgerEntry.member_id == duplicate.id).update({"member_id": primary.id})
+    duplicate_user_id = duplicate.user_id
+    session.delete(duplicate)
+    session.flush()
+    if not session.scalar(select(Membership).where(Membership.user_id == duplicate_user_id)):
+        duplicate_user = session.get(User, duplicate_user_id)
+        if duplicate_user:
+            session.delete(duplicate_user)
+
+
+def _dedupe_pool_memberships(session: Session, pool_id: str) -> bool:
+    memberships = session.scalars(select(Membership).where(Membership.pool_id == pool_id)).all()
+    user_ids = [membership.user_id for membership in memberships]
+    users = {user.id: user for user in session.scalars(select(User).where(User.id.in_(user_ids or [""]))).all()}
+    duplicate_groups: dict[tuple[str, str], list[Membership]] = {}
+    for membership in memberships:
+        user = users.get(membership.user_id)
+        if not user or user.is_monkey:
+            continue
+        normalized_nickname = _normalize_nickname(user.nickname)
+        normalized_email = _normalize_email(user.email or "")
+        if not normalized_nickname or not normalized_email:
+            continue
+        duplicate_groups.setdefault((normalized_nickname, normalized_email), []).append(membership)
+
+    repaired = False
+    for grouped_memberships in duplicate_groups.values():
+        if len(grouped_memberships) < 2:
+            continue
+
+        # Keep the earliest/canonical membership as the primary record and move newer activity onto it.
+        # This preserves the original player identity in commissioner views and public pick tables.
+        def canonical_key(membership: Membership) -> tuple[int, datetime, str]:
+            joined_at = membership.joined_at or datetime.max.replace(tzinfo=timezone.utc)
+            return (0 if membership.role == "commissioner" else 1, joined_at, membership.id)
+
+        ordered = sorted(grouped_memberships, key=canonical_key)
+        primary = ordered[0]
+        for duplicate in ordered[1:]:
+            _merge_duplicate_membership(session, primary, duplicate)
+            repaired = True
+    return repaired
 
 
 def _finalize_leaderboard(entries: list[Any]) -> list[Any]:
@@ -1163,6 +1278,8 @@ def _delete_membership(session: Session, membership: Membership) -> None:
 
 
 def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
+    if _dedupe_pool_memberships(session, pool_id):
+        session.commit()
     if auto_lock_due_windows(session):
         session.commit()
     if _materialize_resolved_windows(session, pool_id):
@@ -1628,6 +1745,15 @@ def join_pool(
     invite = session.scalar(select(InviteLink).where(InviteLink.token == token, InviteLink.active.is_(True)))
     if not invite:
         raise HTTPException(status_code=404, detail="Invite link not found.")
+    existing_membership = _find_existing_membership_for_identity(session, invite.pool_id, nickname, email)
+    if existing_membership:
+        membership, user = existing_membership
+        response = RedirectResponse(
+            url=redirect_with_message(invite.pool_id, "overview", "success", f"Welcome back, {user.nickname}. You are already registered in this pool."),
+            status_code=303,
+        )
+        set_session_cookie(response, membership.id)
+        return response
     normalized_email = _normalize_email(email)
     user = User(email=normalized_email or None, nickname=nickname, avatar=avatar)
     session.add(user)

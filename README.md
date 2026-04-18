@@ -171,7 +171,7 @@ Exports include:
 - CSV extracts
 - `fallback_workbook.xlsx`
 
-`snapshot.json` is the authoritative restore source.
+`snapshot.json` is the authoritative restore source.ב
 
 ## Important implementation notes
 
