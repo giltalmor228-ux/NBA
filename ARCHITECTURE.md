@@ -70,6 +70,7 @@ Responsibilities:
 
 - converts windows, submissions, and result snapshots into player state
 - scores early picks, play-in, and playoff series
+- treats exact-result weights as total pre-bonus values, not additive values on top of winner points
 - applies exact-result bonuses
 - applies tiebreak ordering
 - computes projected ceiling

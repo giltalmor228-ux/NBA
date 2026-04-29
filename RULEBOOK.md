@@ -103,10 +103,12 @@ Internally the app translates total games to exact result:
 
 ### Round weights
 
-- Round 1: winner `1`, exact result `3`
-- Round 2: winner `2`, exact result `5`
-- Conference Finals: winner `3`, exact result `8`
-- NBA Finals: winner `4`, exact result `10`
+- Round 1: winner `1`, exact result total `3`
+- Round 2: winner `2`, exact result total `5`
+- Conference Finals: winner `3`, exact result total `8`
+- NBA Finals: winner `4`, exact result total `10`
+
+If a player gets the exact result, that total already includes the winner points before any exact-result bonus is added.
 
 ## 8. Exact-result bonus
 

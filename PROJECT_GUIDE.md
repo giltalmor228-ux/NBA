@@ -177,6 +177,8 @@ Each series board uses:
 
 The scoring engine converts total games into an exact-result string internally.
 
+For playoff series, the exact-result value is the total score for a perfect series call before any exact-result bonus is added.
+
 ## Typical commissioner workflow
 
 ## 1. Create the pool

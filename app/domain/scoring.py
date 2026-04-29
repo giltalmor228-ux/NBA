@@ -6,11 +6,11 @@ from typing import Any
 
 
 ROUND_POINTS = {
-    "play_in": {"winner": 1, "exact": 0},
-    "round_1": {"winner": 1, "exact": 3},
-    "round_2": {"winner": 2, "exact": 5},
-    "conference_finals": {"winner": 3, "exact": 8},
-    "finals": {"winner": 4, "exact": 10},
+    "play_in": {"winner": 1, "exact_total": 0},
+    "round_1": {"winner": 1, "exact_total": 3},
+    "round_2": {"winner": 2, "exact_total": 5},
+    "conference_finals": {"winner": 3, "exact_total": 8},
+    "finals": {"winner": 4, "exact_total": 10},
 }
 
 EARLY_PICK_MAX = 16
@@ -132,6 +132,12 @@ def _exact_bonus(hit_count: int) -> int:
     return 0
 
 
+def _series_max_remaining_points(round_points: dict[str, int]) -> int:
+    if round_points["exact_total"] > 0:
+        return round_points["exact_total"] + 2
+    return round_points["winner"]
+
+
 def score_pool(
     members: list[MemberState],
     windows: list[WindowEnvelope],
@@ -183,7 +189,7 @@ def score_pool(
             result = result_map.get(("series", series_key))
             round_points = ROUND_POINTS[series_meta["round"]]
             exact_hit_members = set()
-            if result and round_points["exact"] > 0:
+            if result and round_points["exact_total"] > 0:
                 for member_id, submission in member_submissions.items():
                     pick = _series_pick_map(submission.payload).get(series_key)
                     if pick and pick.get("exact_result") == result.payload.get("exact_result"):
@@ -195,15 +201,15 @@ def score_pool(
                 pick = _series_pick_map(submission.payload).get(series_key) if submission else None
                 if not pick:
                     if not window.is_locked:
-                        entry.max_remaining_points += round_points["winner"] + round_points["exact"] + (2 if round_points["exact"] else 0)
+                        entry.max_remaining_points += _series_max_remaining_points(round_points)
                     continue
                 if not result:
-                    entry.max_remaining_points += round_points["winner"] + round_points["exact"] + (2 if round_points["exact"] else 0)
+                    entry.max_remaining_points += _series_max_remaining_points(round_points)
                     continue
 
                 winner_points = round_points["winner"] if pick.get("winner") == result.payload.get("winner") else 0
-                exact_match = round_points["exact"] > 0 and pick.get("exact_result") == result.payload.get("exact_result")
-                exact_points = round_points["exact"] if exact_match else 0
+                exact_match = round_points["exact_total"] > 0 and pick.get("exact_result") == result.payload.get("exact_result")
+                exact_points = max(round_points["exact_total"] - round_points["winner"], 0) if exact_match else 0
                 if exact_match:
                     entry.exact_hits += 1
                 bonus = bonus_points if exact_match else 0
@@ -217,7 +223,7 @@ def score_pool(
                         "points": total,
                         "details": [
                             {"label": "Winner pick", "points": winner_points},
-                            {"label": "Exact result", "points": exact_points},
+                            {"label": "Exact result upgrade", "points": exact_points},
                             {"label": "Exact bonus", "points": bonus},
                         ],
                     }

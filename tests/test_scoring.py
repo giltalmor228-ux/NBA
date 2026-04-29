@@ -64,10 +64,10 @@ def test_scoring_exact_bonus_and_monkey_payout_skip() -> None:
     leaderboard = score_pool(members, windows, submissions, results)
 
     assert leaderboard[0].member_id == "a"
-    assert leaderboard[0].total_points == 5
+    assert leaderboard[0].total_points == 4
     assert leaderboard[0].payout_rank == 1
     assert leaderboard[1].member_id == "b"
-    assert leaderboard[1].total_points == 5
+    assert leaderboard[1].total_points == 4
     assert leaderboard[1].payout_rank == 2
     assert leaderboard[2].member_id == "m"
     assert leaderboard[2].payout_rank == 3

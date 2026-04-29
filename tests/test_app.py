@@ -17,6 +17,7 @@ os.environ["SCHEDULER_ENABLED"] = "false"
 
 from app.data.nba_catalog import TEAM_BY_CODE, players_for_teams, teams_by_conference  # noqa: E402
 from app.db import SessionLocal, init_db  # noqa: E402
+from app.domain.scoring import MemberState, ResultEnvelope, SubmissionEnvelope, WindowEnvelope, score_pool  # noqa: E402
 from app.main import app, load_pool_context, localize_datetime_display, localize_datetime_input, parse_iso_datetime, team_logo  # noqa: E402
 from app.models import BettingWindow, Membership, PickSubmission, ResultSnapshot, SideBet, SideBetSubmission, User  # noqa: E402
 
@@ -28,6 +29,8 @@ PNG_1X1 = (
     b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc`\x00\x01"
     b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+FUTURE_OPEN_AT = "2030-04-14T12:00"
+FUTURE_LOCK_AT = "2030-04-18T19:00"
 
 
 def create_pool(client: TestClient, name: str) -> str:
@@ -227,6 +230,99 @@ def test_commissioner_can_update_window_times() -> None:
         assert refreshed.locks_at.isoformat().startswith("2026-04-16T18:30:00")
         assert localize_datetime_input(refreshed.opens_at) == "2026-04-15T10:00"
         assert localize_datetime_input(refreshed.locks_at) == "2026-04-16T21:30"
+
+
+def test_exact_result_totals_are_not_additive_before_bonus() -> None:
+    members = [
+        MemberState(member_id="a", display_name="Alpha"),
+        MemberState(member_id="b", display_name="Beta"),
+        MemberState(member_id="c", display_name="Gamma"),
+    ]
+    windows = [
+        WindowEnvelope(
+            window_id="playin",
+            name="Play-In",
+            round_key="play_in",
+            bet_type="play_in",
+            config={"series": [{"series_key": "playin", "round": "play_in"}]},
+            is_locked=True,
+        ),
+        WindowEnvelope(
+            window_id="r1",
+            name="Round 1",
+            round_key="round_1",
+            bet_type="series",
+            config={"series": [{"series_key": "r1", "round": "round_1"}]},
+            is_locked=True,
+        ),
+        WindowEnvelope(
+            window_id="r2",
+            name="Round 2",
+            round_key="round_2",
+            bet_type="series",
+            config={"series": [{"series_key": "r2", "round": "round_2"}]},
+            is_locked=True,
+        ),
+        WindowEnvelope(
+            window_id="cf",
+            name="Conference Finals",
+            round_key="conference_finals",
+            bet_type="series",
+            config={"series": [{"series_key": "cf", "round": "conference_finals"}]},
+            is_locked=True,
+        ),
+        WindowEnvelope(
+            window_id="finals",
+            name="Finals",
+            round_key="finals",
+            bet_type="series",
+            config={"series": [{"series_key": "finals", "round": "finals"}]},
+            is_locked=True,
+        ),
+    ]
+    submissions = []
+    for member_id in ("a", "b", "c"):
+        submissions.extend(
+            [
+                SubmissionEnvelope(window_id="playin", member_id=member_id, submitted_at=parse_iso_datetime("2026-04-18T12:00:00+00:00"), payload={"series": {"playin": {"winner": "BOS", "exact_result": "1-0"}}}),
+                SubmissionEnvelope(window_id="r1", member_id=member_id, submitted_at=parse_iso_datetime("2026-04-18T12:01:00+00:00"), payload={"series": {"r1": {"winner": "BOS", "exact_result": "4-2"}}}),
+                SubmissionEnvelope(window_id="r2", member_id=member_id, submitted_at=parse_iso_datetime("2026-04-18T12:02:00+00:00"), payload={"series": {"r2": {"winner": "BOS", "exact_result": "4-2"}}}),
+                SubmissionEnvelope(window_id="cf", member_id=member_id, submitted_at=parse_iso_datetime("2026-04-18T12:03:00+00:00"), payload={"series": {"cf": {"winner": "BOS", "exact_result": "4-2"}}}),
+                SubmissionEnvelope(window_id="finals", member_id=member_id, submitted_at=parse_iso_datetime("2026-04-18T12:04:00+00:00"), payload={"series": {"finals": {"winner": "BOS", "exact_result": "4-2"}}}),
+            ]
+        )
+    results = [
+        ResultEnvelope(scope_type="series", scope_key="playin", created_at=parse_iso_datetime("2026-04-18T15:00:00+00:00"), payload={"winner": "BOS", "exact_result": "1-0"}),
+        ResultEnvelope(scope_type="series", scope_key="r1", created_at=parse_iso_datetime("2026-04-18T15:01:00+00:00"), payload={"winner": "BOS", "exact_result": "4-2"}),
+        ResultEnvelope(scope_type="series", scope_key="r2", created_at=parse_iso_datetime("2026-04-18T15:02:00+00:00"), payload={"winner": "BOS", "exact_result": "4-2"}),
+        ResultEnvelope(scope_type="series", scope_key="cf", created_at=parse_iso_datetime("2026-04-18T15:03:00+00:00"), payload={"winner": "BOS", "exact_result": "4-2"}),
+        ResultEnvelope(scope_type="series", scope_key="finals", created_at=parse_iso_datetime("2026-04-18T15:04:00+00:00"), payload={"winner": "BOS", "exact_result": "4-2"}),
+    ]
+
+    leaderboard = score_pool(members, windows, submissions, results)
+
+    assert [entry.total_points for entry in leaderboard] == [27, 27, 27]
+    assert [entry.exact_hits for entry in leaderboard] == [4, 4, 4]
+
+
+def test_round_one_ceiling_uses_exact_result_total_points() -> None:
+    leaderboard = score_pool(
+        [MemberState(member_id="a", display_name="Alpha")],
+        [
+            WindowEnvelope(
+                window_id="r1-open",
+                name="Round 1 Open",
+                round_key="round_1",
+                bet_type="series",
+                config={"series": [{"series_key": "r1-open", "round": "round_1"}]},
+                is_locked=False,
+            )
+        ],
+        [],
+        [],
+    )
+
+    assert leaderboard[0].projected_ceiling == 5
 
 
 def test_israel_timezone_roundtrip_for_schedule_inputs() -> None:
@@ -822,15 +918,15 @@ def test_save_prediction_redirects_cleanly_after_submit() -> None:
     create_window_response = commissioner_client.post(
         f"{pool_url}/windows",
         data={
-            "name": "",
-            "round_key": "round_1",
-            "bet_type": "series",
-            "opens_at": "2026-04-14T12:00",
-            "locks_at": "2026-04-18T19:00",
-            "team_one": "BOS",
-            "team_two": "ORL",
-            "series_key": "",
-            "next_tab": "commissioner",
+                "name": "",
+                "round_key": "round_1",
+                "bet_type": "series",
+                "opens_at": FUTURE_OPEN_AT,
+                "locks_at": FUTURE_LOCK_AT,
+                "team_one": "BOS",
+                "team_two": "ORL",
+                "series_key": "",
+                "next_tab": "commissioner",
         },
         follow_redirects=False,
     )
@@ -865,8 +961,8 @@ def test_series_results_require_all_visible_fields() -> None:
             "name": "",
             "round_key": "round_1",
             "bet_type": "series",
-            "opens_at": "2026-04-14T12:00",
-            "locks_at": "2026-04-18T19:00",
+            "opens_at": FUTURE_OPEN_AT,
+            "locks_at": FUTURE_LOCK_AT,
             "team_one": "BOS",
             "team_two": "ORL",
             "series_key": "",
@@ -916,8 +1012,8 @@ def test_matchup_detail_and_closed_bets_tables_show_results_and_points() -> None
             "name": "",
             "round_key": "round_1",
             "bet_type": "series",
-            "opens_at": "2026-04-14T12:00",
-            "locks_at": "2026-04-18T19:00",
+            "opens_at": FUTURE_OPEN_AT,
+            "locks_at": FUTURE_LOCK_AT,
             "team_one": "BOS",
             "team_two": "ORL",
             "series_key": "",
@@ -983,7 +1079,7 @@ def test_matchup_detail_and_closed_bets_tables_show_results_and_points() -> None
     assert "Winner pick" in matchup_page.text
     assert "Point breakdown" in matchup_page.text
     assert "Winner pick: 1" in matchup_page.text
-    assert "Exact result: 3" in matchup_page.text
+    assert "Exact result upgrade: 2" in matchup_page.text
 
     player_page = commissioner_client.get(re.search(rf"/pools/{pool_id}/players/([a-f0-9-]+)", overview_page.text).group(0))
     assert player_page.status_code == 200
@@ -1926,8 +2022,8 @@ def test_bulk_player_save_persists_valid_games_and_skips_incomplete_ones() -> No
                 "name": "",
                 "round_key": "round_1",
                 "bet_type": "series",
-                "opens_at": "2026-04-14T12:00",
-                "locks_at": "2026-04-18T19:00",
+                "opens_at": FUTURE_OPEN_AT,
+                "locks_at": FUTURE_LOCK_AT,
                 "team_one": team_one,
                 "team_two": team_two,
                 "series_key": "",
@@ -2067,6 +2163,65 @@ def test_commissioner_can_upload_last_place_spotlight_photo() -> None:
         saved_file.unlink(missing_ok=True)
 
 
+def test_last_place_spotlight_skips_monkey_when_monkey_is_last() -> None:
+    commissioner_client = TestClient(app)
+    zulu_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Monkey Last Spotlight Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    zulu_client.post(f"/invite/{invite_token}", data={"nickname": "Zulu", "email": "zulu@example.com", "avatar": "😅"}, follow_redirects=False)
+
+    early_window = find_window_by_name(pool_id, "Early Picks")
+    conference_map = teams_by_conference()
+    east_teams = [team.code for team in conference_map["East"]]
+    west_teams = [team.code for team in conference_map["West"]]
+    finals_mvp = players_for_teams([east_teams[0], west_teams[0]])[0]
+    exact_early_pick = {
+        "conference_finalists_east": east_teams[0],
+        "conference_finalists_west": west_teams[1],
+        "nba_finalists_east": east_teams[0],
+        "nba_finalists_west": west_teams[0],
+        "champion": east_teams[0],
+        "finals_mvp": finals_mvp,
+    }
+    commissioner_client.post(f"{pool_url}/windows/{early_window.id}/submit", data=exact_early_pick, follow_redirects=False)
+    zulu_client.post(f"{pool_url}/windows/{early_window.id}/submit", data=exact_early_pick, follow_redirects=False)
+    for field_name, field_value in exact_early_pick.items():
+        commissioner_client.post(
+            f"{pool_url}/results/early-field",
+            data={"field_name": field_name, "field_value": field_value},
+            follow_redirects=False,
+        )
+
+    with SessionLocal() as session:
+        monkey_membership = session.scalar(
+            select(Membership).join(User, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.is_monkey.is_(True))
+        )
+        assert monkey_membership is not None
+        monkey_submission = session.scalar(
+            select(PickSubmission).where(PickSubmission.window_id == early_window.id, PickSubmission.member_id == monkey_membership.id)
+        )
+        assert monkey_submission is not None
+        monkey_submission.payload = {
+            "conference_finalists": {"East": "BKN", "West": "SAC"},
+            "nba_finalists": {"East": "BKN", "West": "SAC"},
+            "champion": "BKN",
+            "finals_mvp": "Wrong Player",
+        }
+        zulu_user = session.scalar(select(User).join(Membership, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.nickname == "Zulu"))
+        assert zulu_user is not None
+        zulu_user.loser_photo_path = "/static/uploads/loser-photos/zulu-test.png"
+        session.commit()
+
+    overview_response = commissioner_client.get(f"{pool_url}?tab=overview")
+    assert overview_response.status_code == 200
+    assert "Congratulations to the loser in the last place" in overview_response.text
+    assert "Zulu" in overview_response.text
+    assert "The Monkey" in overview_response.text
+    assert "/static/uploads/loser-photos/zulu-test.png" in overview_response.text
+
+
 def test_overview_ordering_saved_banners_and_player_missing_picks() -> None:
     commissioner_client = TestClient(app)
     player_client = TestClient(app)
@@ -2088,8 +2243,8 @@ def test_overview_ordering_saved_banners_and_player_missing_picks() -> None:
                 "name": "",
                 "round_key": round_key,
                 "bet_type": bet_type,
-                "opens_at": "2026-04-14T12:00",
-                "locks_at": "2026-04-18T19:00",
+                "opens_at": FUTURE_OPEN_AT,
+                "locks_at": FUTURE_LOCK_AT,
                 "team_one": team_one,
                 "team_two": team_two,
                 "series_key": "",
@@ -2138,8 +2293,8 @@ def test_player_can_save_multiple_marked_pick_boards_together() -> None:
                 "name": "",
                 "round_key": round_key,
                 "bet_type": bet_type,
-                "opens_at": "2026-04-14T12:00",
-                "locks_at": "2026-04-18T19:00",
+                "opens_at": FUTURE_OPEN_AT,
+                "locks_at": FUTURE_LOCK_AT,
                 "team_one": team_one,
                 "team_two": team_two,
                 "series_key": "",

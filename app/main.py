@@ -1434,14 +1434,16 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
     memberships_by_id = {membership.id: membership for membership in memberships}
     leader_row = leaderboard[0] if leaderboard else None
     last_place_row = leaderboard[-1] if leaderboard else None
+    last_place_human_row = next((row for row in reversed(leaderboard) if not row.is_monkey), None)
     leader_message = _latest_leader_message(session, pool_id)
     last_place_spotlight = None
-    if last_place_row:
-        last_place_membership = memberships_by_id.get(last_place_row.member_id)
+    spotlight_row = last_place_human_row if last_place_row and last_place_row.is_monkey else last_place_row
+    if spotlight_row:
+        last_place_membership = memberships_by_id.get(spotlight_row.member_id)
         last_place_user = users.get(last_place_membership.user_id) if last_place_membership else None
         if last_place_user and last_place_user.loser_photo_path:
             last_place_spotlight = {
-                "member_id": last_place_row.member_id,
+                "member_id": spotlight_row.member_id,
                 "display_name": last_place_user.nickname,
                 "image_url": last_place_user.loser_photo_path,
             }
@@ -1505,6 +1507,7 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
         "matchup_lookup": matchup_lookup,
         "leader_row": leader_row,
         "last_place_row": last_place_row,
+        "last_place_human_row": last_place_human_row,
         "leader_message": leader_message,
         "last_place_spotlight": last_place_spotlight,
         "members_missing_email": members_missing_email,
@@ -1529,10 +1532,10 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
             ],
             "series_rounds": [
                 "Play-In: winner 1 point",
-                "Round 1: winner 1 point, exact result 3 points",
-                "Round 2: winner 2 points, exact result 5 points",
-                "Conference Finals: winner 3 points, exact result 8 points",
-                "NBA Finals: winner 4 points, exact result 10 points",
+                "Round 1: winner 1 point, exact result total 3 points",
+                "Round 2: winner 2 points, exact result total 5 points",
+                "Conference Finals: winner 3 points, exact result total 8 points",
+                "NBA Finals: winner 4 points, exact result total 10 points",
             ],
             "exact_bonus": [
                 "Exactly 1 player gets the exact result: +2 bonus",
