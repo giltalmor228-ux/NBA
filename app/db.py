@@ -50,6 +50,13 @@ def _ensure_runtime_schema() -> None:
         if "loser_photo_path" not in column_names:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE users ADD COLUMN loser_photo_path VARCHAR(255)"))
+        if "loser_photo_content_type" not in column_names:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE users ADD COLUMN loser_photo_content_type VARCHAR(64)"))
+        if "loser_photo_blob" not in column_names:
+            blob_type = "BYTEA" if engine.dialect.name == "postgresql" else "BLOB"
+            with engine.begin() as connection:
+                connection.execute(text(f"ALTER TABLE users ADD COLUMN loser_photo_blob {blob_type}"))
     if inspector.has_table("side_bets"):
         column_names = {column["name"] for column in inspector.get_columns("side_bets")}
         if "points_value" not in column_names:

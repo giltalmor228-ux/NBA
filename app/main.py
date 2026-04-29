@@ -12,7 +12,7 @@ from urllib.parse import quote_plus, urlencode
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete, select
@@ -170,14 +170,21 @@ def _spotlight_upload_relative_path(filename: str) -> str:
     return f"/static/uploads/loser-photos/{filename}"
 
 
-def _delete_loser_spotlight_file(relative_path: str | None) -> None:
-    if not relative_path:
-        return
+def _spotlight_upload_absolute_path(relative_path: str | None) -> Path | None:
     prefix = "/static/uploads/loser-photos/"
-    if not relative_path.startswith(prefix):
-        return
-    candidate = LOSER_SPOTLIGHT_UPLOAD_DIR / Path(relative_path).name
-    candidate.unlink(missing_ok=True)
+    if not relative_path or not relative_path.startswith(prefix):
+        return None
+    return LOSER_SPOTLIGHT_UPLOAD_DIR / Path(relative_path).name
+
+
+def _delete_loser_spotlight_file(relative_path: str | None) -> None:
+    candidate = _spotlight_upload_absolute_path(relative_path)
+    if candidate:
+        candidate.unlink(missing_ok=True)
+
+
+def _loser_spotlight_image_url(pool_id: str, member_id: str) -> str:
+    return f"/pools/{pool_id}/members/{member_id}/loser-photo"
 
 
 def _upload_extension(photo: UploadFile) -> str | None:
@@ -1441,11 +1448,11 @@ def load_pool_context(session: Session, pool_id: str) -> dict[str, Any]:
     if spotlight_row:
         last_place_membership = memberships_by_id.get(spotlight_row.member_id)
         last_place_user = users.get(last_place_membership.user_id) if last_place_membership else None
-        if last_place_user and last_place_user.loser_photo_path:
+        if last_place_user and last_place_membership and (last_place_user.loser_photo_blob or last_place_user.loser_photo_path):
             last_place_spotlight = {
                 "member_id": spotlight_row.member_id,
                 "display_name": last_place_user.nickname,
-                "image_url": last_place_user.loser_photo_path,
+                "image_url": _loser_spotlight_image_url(pool.id, last_place_membership.id),
             }
     members_missing_email = [membership for membership in memberships if not (users.get(membership.user_id) and (users[membership.user_id].email or "").strip()) and not users[membership.user_id].is_monkey]
     side_bet_rows = []
@@ -1910,6 +1917,22 @@ def matchup_detail(pool_id: str, series_key: str, request: Request, session: Ses
             "matchup": matchup,
         },
     )
+
+
+@app.get("/pools/{pool_id}/members/{member_id}/loser-photo")
+def loser_spotlight_photo(pool_id: str, member_id: str, session: Session = Depends(get_session)) -> Response:
+    membership = session.get(Membership, member_id)
+    if not membership or membership.pool_id != pool_id:
+        raise HTTPException(status_code=404, detail="Player not found.")
+    user = session.get(User, membership.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Player not found.")
+    if user.loser_photo_blob:
+        return Response(content=user.loser_photo_blob, media_type=user.loser_photo_content_type or "application/octet-stream")
+    candidate = _spotlight_upload_absolute_path(user.loser_photo_path)
+    if candidate and candidate.exists():
+        return FileResponse(candidate)
+    raise HTTPException(status_code=404, detail="Loser spotlight photo not found.")
 
 
 @app.post("/pools/{pool_id}/leader-message")
@@ -2578,6 +2601,13 @@ async def upload_member_loser_photo(
     file_path = LOSER_SPOTLIGHT_UPLOAD_DIR / filename
     file_path.write_bytes(content)
     _delete_loser_spotlight_file(user.loser_photo_path)
+    user.loser_photo_blob = content
+    user.loser_photo_content_type = (photo.content_type or "").lower() or {
+        ".jpg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+    }.get(extension, "application/octet-stream")
     user.loser_photo_path = _spotlight_upload_relative_path(filename)
     session.add(
         EventLog(

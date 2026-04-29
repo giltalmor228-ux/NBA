@@ -2152,14 +2152,24 @@ def test_commissioner_can_upload_last_place_spotlight_photo() -> None:
     assert overview_response.status_code == 200
     assert "Congratulations to the loser in the last place" in overview_response.text
     assert "Zulu" in overview_response.text
-    assert "/static/uploads/loser-photos/" in overview_response.text
+    photo_url = f"/pools/{pool_id}/members/{zulu_member_id}/loser-photo"
+    assert photo_url in overview_response.text
+
+    commissioner_photo_response = commissioner_client.get(photo_url)
+    assert commissioner_photo_response.status_code == 200
+    assert commissioner_photo_response.headers["content-type"].startswith("image/")
+
+    player_photo_response = amy_client.get(photo_url)
+    assert player_photo_response.status_code == 200
+    assert player_photo_response.headers["content-type"].startswith("image/")
+    assert player_photo_response.content == commissioner_photo_response.content
 
     with SessionLocal() as session:
         zulu_user = session.scalar(select(User).join(Membership, Membership.user_id == User.id).where(Membership.id == zulu_member_id))
         assert zulu_user is not None
         assert zulu_user.loser_photo_path
+        assert zulu_user.loser_photo_blob
         saved_file = Path("app/static") / zulu_user.loser_photo_path.removeprefix("/static/")
-        assert saved_file.exists()
         saved_file.unlink(missing_ok=True)
 
 
@@ -2199,6 +2209,10 @@ def test_last_place_spotlight_skips_monkey_when_monkey_is_last() -> None:
             select(Membership).join(User, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.is_monkey.is_(True))
         )
         assert monkey_membership is not None
+        zulu_membership = session.scalar(
+            select(Membership).join(User, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.nickname == "Zulu")
+        )
+        assert zulu_membership is not None
         monkey_submission = session.scalar(
             select(PickSubmission).where(PickSubmission.window_id == early_window.id, PickSubmission.member_id == monkey_membership.id)
         )
@@ -2211,6 +2225,8 @@ def test_last_place_spotlight_skips_monkey_when_monkey_is_last() -> None:
         }
         zulu_user = session.scalar(select(User).join(Membership, Membership.user_id == User.id).where(Membership.pool_id == pool_id, User.nickname == "Zulu"))
         assert zulu_user is not None
+        zulu_user.loser_photo_blob = PNG_1X1
+        zulu_user.loser_photo_content_type = "image/png"
         zulu_user.loser_photo_path = "/static/uploads/loser-photos/zulu-test.png"
         session.commit()
 
@@ -2219,7 +2235,7 @@ def test_last_place_spotlight_skips_monkey_when_monkey_is_last() -> None:
     assert "Congratulations to the loser in the last place" in overview_response.text
     assert "Zulu" in overview_response.text
     assert "The Monkey" in overview_response.text
-    assert "/static/uploads/loser-photos/zulu-test.png" in overview_response.text
+    assert f"/pools/{pool_id}/members/{zulu_membership.id}/loser-photo" in overview_response.text
 
 
 def test_overview_ordering_saved_banners_and_player_missing_picks() -> None:
