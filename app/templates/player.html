@@ -93,8 +93,7 @@
         <table class="min-w-full text-left text-sm text-slate-600">
           <thead>
             <tr class="border-b border-slate-200 text-slate-500">
-              <th class="px-3 py-3">Board</th>
-              <th class="px-3 py-3">Bet</th>
+              <th class="w-[38%] px-3 py-3">Board</th>
               <th class="px-3 py-3">Winner pick</th>
               <th class="px-3 py-3">Result pick</th>
               <th class="px-3 py-3">Official result</th>
@@ -103,8 +102,7 @@
           <tbody>
             {% for item in visible_pick_rows %}
               <tr class="border-b border-slate-100 align-top">
-                <td class="px-3 py-3 font-semibold text-slate-900">{{ item.board }}</td>
-                <td class="px-3 py-3">{{ item.bet_label }}</td>
+                <td class="w-[38%] px-3 py-3 font-semibold text-slate-900">{{ item.board }}</td>
                 <td class="px-3 py-3">{{ item.winner_pick }}</td>
                 <td class="px-3 py-3">{{ item.exact_result_pick }}</td>
                 <td class="px-3 py-3">{{ item.official_result }}</td>
