@@ -1086,6 +1086,10 @@ def test_matchup_detail_and_closed_bets_tables_show_results_and_points() -> None
     assert "Score breakdown" in player_page.text
     assert "Board" in player_page.text
     assert "Breakdown" in player_page.text
+    assert "All visible bets" in player_page.text
+    assert "Official result" in player_page.text
+    assert "Boston Celtics vs Orlando Magic" in player_page.text
+    assert "Boston won 4-2" in player_page.text
 
 
 def test_first_place_player_can_post_highlighted_message() -> None:
@@ -2405,3 +2409,78 @@ def test_bulk_saved_generated_play_in_picks_show_up_in_closed_bets() -> None:
     assert matchup_9v10.status_code == 200
     assert "Avi" in matchup_9v10.text
     assert TEAM_BY_CODE[east_seeds[9]].name in matchup_9v10.text
+
+
+def test_closed_bets_prioritizes_early_then_current_games_by_newest_open_date() -> None:
+    commissioner_client = TestClient(app)
+    player_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Closed Bets Ordering")
+    pool_id = pool_id_from_url(pool_url)
+
+    invite_token = re.search(r"/invite/([A-Za-z0-9_-]+)", commissioner_client.get(f"{pool_url}?tab=overview").text).group(1)
+    player_client.post(
+        f"/invite/{invite_token}",
+        data={"nickname": "Avi", "email": "avi@example.com", "avatar": "🔥"},
+        follow_redirects=False,
+    )
+
+    early_window = find_window_by_name(pool_id, "Early Picks")
+    submit_early_picks(commissioner_client, pool_url, early_window.id, ["BOS", "NYK"], ["OKC", "DEN"], 0)
+    lock_window_and_assert_revealed(commissioner_client, pool_url, early_window)
+
+    windows_to_create = [
+        ("round_1", "BOS", "ORL", "2030-04-18T12:00", "2030-04-19T19:00"),
+        ("round_2", "NYK", "MIL", "2030-04-22T12:00", "2030-04-23T19:00"),
+        ("conference_finals", "OKC", "MIN", "2030-04-22T12:00", "2030-04-23T19:00"),
+    ]
+    for round_key, team_one, team_two, opens_at, locks_at in windows_to_create:
+        response = commissioner_client.post(
+            f"{pool_url}/windows",
+            data={
+                "name": "",
+                "round_key": round_key,
+                "bet_type": "series",
+                "opens_at": opens_at,
+                "locks_at": locks_at,
+                "team_one": team_one,
+                "team_two": team_two,
+                "series_key": "",
+                "next_tab": "commissioner",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+    round_one_window = find_window_by_series_key(pool_id, "round_1-BOS-ORL")
+    round_two_window = find_window_by_series_key(pool_id, "round_2-NYK-MIL")
+    conference_window = find_window_by_series_key(pool_id, "conference_finals-OKC-MIN")
+
+    submit_series_pick(commissioner_client, pool_url, round_one_window, 0, "BOS", 6)
+    submit_series_pick(commissioner_client, pool_url, round_two_window, 0, "NYK", 6)
+    submit_series_pick(commissioner_client, pool_url, conference_window, 0, "OKC", 6)
+
+    lock_window_and_assert_revealed(commissioner_client, pool_url, round_one_window)
+    lock_window_and_assert_revealed(commissioner_client, pool_url, round_two_window)
+    lock_window_and_assert_revealed(commissioner_client, pool_url, conference_window)
+
+    commissioner_client.post(
+        f"{pool_url}/results",
+        data={
+            "scope_type": "series",
+            "scope_key": "round_1-BOS-ORL",
+            "result_winner": "BOS",
+            "result_games_count": "6",
+            "bet_type": "series",
+            "display_score": "Boston won 4-2",
+            "source": "manual",
+        },
+        follow_redirects=False,
+    )
+
+    closed_bets_page = commissioner_client.get(f"{pool_url}?tab=bets")
+    assert closed_bets_page.status_code == 200
+    early_idx = closed_bets_page.text.index("Early picks")
+    conference_idx = closed_bets_page.text.index("Oklahoma City Thunder vs Minnesota Timberwolves")
+    round_two_idx = closed_bets_page.text.index("New York Knicks vs Milwaukee Bucks")
+    round_one_idx = closed_bets_page.text.index("Boston Celtics vs Orlando Magic")
+    assert early_idx < conference_idx < round_two_idx < round_one_idx

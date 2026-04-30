@@ -443,12 +443,15 @@ def _window_sort_key(window: BettingWindow) -> tuple[int, int, int, datetime, da
     return (is_early, lock_group, _series_priority(window.round_key, conference), window.opens_at, window.created_at)
 
 
-def _matchup_row_sort_key(row: dict[str, Any]) -> tuple[int, int, int, datetime, datetime]:
+def _matchup_row_sort_key(row: dict[str, Any]) -> tuple[int, int, float, int, float]:
     window = row["window"]
     conference = row.get("series", {}).get("conference") if row.get("series") else None
     is_early = 0 if row["type"] == "early" else 1
-    lock_group = 0 if not window.is_locked else 1
-    return (is_early, lock_group, _series_priority(window.round_key, conference), window.opens_at, window.created_at)
+    has_result = 1 if row.get("result_payload") else 0
+    opens_sort = -window.opens_at.timestamp()
+    created_sort = -window.created_at.timestamp()
+    round_sort = -_series_priority(window.round_key, conference)
+    return (is_early, has_result, opens_sort, round_sort, created_sort)
 
 
 def latest_result_payloads(items: list[ResultSnapshot]) -> dict[tuple[str, str], dict[str, Any]]:
@@ -1859,6 +1862,7 @@ def player_detail(pool_id: str, member_id: str, request: Request, session: Sessi
     target_user = context["users"][target_membership.user_id]
     leaderboard_row = next((row for row in context["leaderboard"] if row.member_id == member_id), None)
     visible_picks = []
+    visible_pick_rows = []
     missing_picks = []
     for window in context["windows"]:
         submission = context["submissions_by_window_member"].get((window.id, member_id))
@@ -1869,6 +1873,44 @@ def player_detail(pool_id: str, member_id: str, request: Request, session: Sessi
                 continue
             if submission:
                 visible_picks.append({"window": window, "type": "early", "payload": submission.payload})
+                payload = submission.payload
+                result_payload = latest_result_payloads(context["results"]).get(("early", "season"))
+                visible_pick_rows.append(
+                    {
+                        "board": window.name,
+                        "round_label": window.round_key.replace("_", " ").title(),
+                        "bet_label": "Early picks",
+                        "winner_pick": "East finalist: "
+                        + team_name(payload.get("conference_finalists", {}).get("East"))
+                        + " | West finalist: "
+                        + team_name(payload.get("conference_finalists", {}).get("West"))
+                        + " | East NBA finalist: "
+                        + team_name(payload.get("nba_finalists", {}).get("East"))
+                        + " | West NBA finalist: "
+                        + team_name(payload.get("nba_finalists", {}).get("West"))
+                        + " | Champion: "
+                        + team_name(payload.get("champion"))
+                        + " | Finals MVP: "
+                        + (payload.get("finals_mvp") or "No pick"),
+                        "exact_result_pick": "—",
+                        "official_result": (
+                            "East finalist: "
+                            + team_name(result_payload.get("conference_finalists", {}).get("East"))
+                            + " | West finalist: "
+                            + team_name(result_payload.get("conference_finalists", {}).get("West"))
+                            + " | East NBA finalist: "
+                            + team_name(result_payload.get("nba_finalists", {}).get("East"))
+                            + " | West NBA finalist: "
+                            + team_name(result_payload.get("nba_finalists", {}).get("West"))
+                            + " | Champion: "
+                            + team_name(result_payload.get("champion"))
+                            + " | Finals MVP: "
+                            + (result_payload.get("finals_mvp") or "TBD")
+                            if result_payload
+                            else "Result not posted yet."
+                        ),
+                    }
+                )
             continue
         unresolved_series = [series for series in getattr(window, "render_series", []) if not series["resolved"]]
         if not submission and not window.is_locked:
@@ -1885,6 +1927,16 @@ def player_detail(pool_id: str, member_id: str, request: Request, session: Sessi
         for series in getattr(window, "render_series", []):
             pick = submission.payload.get("series", {}).get(series["series_key"], {}) if submission else {}
             visible_picks.append({"window": window, "type": window.bet_type, "series": series, "payload": pick})
+            visible_pick_rows.append(
+                {
+                    "board": window.name,
+                    "round_label": window.round_key.replace("_", " ").title(),
+                    "bet_label": f"{series['team_details'][0]['name']} vs {series['team_details'][1]['name']}",
+                    "winner_pick": team_name(pick.get("winner")) if pick.get("winner") else "No pick",
+                    "exact_result_pick": pick.get("exact_result", "—") if window.bet_type != "play_in" else "—",
+                    "official_result": context["matchup_lookup"].get(series["series_key"], {}).get("result_summary", "Result not posted yet."),
+                }
+            )
     return templates.TemplateResponse(
         request,
         "player.html",
@@ -1894,6 +1946,7 @@ def player_detail(pool_id: str, member_id: str, request: Request, session: Sessi
             "selected_user": target_user,
             "selected_leaderboard_row": leaderboard_row,
             "visible_picks": visible_picks,
+            "visible_pick_rows": visible_pick_rows,
             "missing_picks": missing_picks,
         },
     )
