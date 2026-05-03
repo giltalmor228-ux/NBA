@@ -192,7 +192,11 @@ def score_pool(
             if result and round_points["exact_total"] > 0:
                 for member_id, submission in member_submissions.items():
                     pick = _series_pick_map(submission.payload).get(series_key)
-                    if pick and pick.get("exact_result") == result.payload.get("exact_result"):
+                    if (
+                        pick
+                        and pick.get("winner") == result.payload.get("winner")
+                        and pick.get("exact_result") == result.payload.get("exact_result")
+                    ):
                         exact_hit_members.add(member_id)
             bonus_points = _exact_bonus(len(exact_hit_members))
 
@@ -208,7 +212,11 @@ def score_pool(
                     continue
 
                 winner_points = round_points["winner"] if pick.get("winner") == result.payload.get("winner") else 0
-                exact_match = round_points["exact_total"] > 0 and pick.get("exact_result") == result.payload.get("exact_result")
+                exact_match = (
+                    round_points["exact_total"] > 0
+                    and pick.get("winner") == result.payload.get("winner")
+                    and pick.get("exact_result") == result.payload.get("exact_result")
+                )
                 exact_points = max(round_points["exact_total"] - round_points["winner"], 0) if exact_match else 0
                 if exact_match:
                     entry.exact_hits += 1

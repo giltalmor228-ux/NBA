@@ -325,6 +325,53 @@ def test_round_one_ceiling_uses_exact_result_total_points() -> None:
     assert leaderboard[0].projected_ceiling == 5
 
 
+def test_exact_result_requires_correct_winner() -> None:
+    leaderboard = score_pool(
+        [
+            MemberState(member_id="a", display_name="Alpha"),
+            MemberState(member_id="b", display_name="Beta"),
+        ],
+        [
+            WindowEnvelope(
+                window_id="r1",
+                name="Round 1",
+                round_key="round_1",
+                bet_type="series",
+                config={"series": [{"series_key": "r1", "round": "round_1"}]},
+                is_locked=True,
+            )
+        ],
+        [
+            SubmissionEnvelope(
+                window_id="r1",
+                member_id="a",
+                submitted_at=parse_iso_datetime("2026-04-18T12:01:00+00:00"),
+                payload={"series": {"r1": {"winner": "BOS", "exact_result": "4-2"}}},
+            ),
+            SubmissionEnvelope(
+                window_id="r1",
+                member_id="b",
+                submitted_at=parse_iso_datetime("2026-04-18T12:02:00+00:00"),
+                payload={"series": {"r1": {"winner": "NYK", "exact_result": "4-2"}}},
+            ),
+        ],
+        [
+            ResultEnvelope(
+                scope_type="series",
+                scope_key="r1",
+                created_at=parse_iso_datetime("2026-04-18T15:01:00+00:00"),
+                payload={"winner": "BOS", "exact_result": "4-2"},
+            )
+        ],
+    )
+
+    by_member = {entry.member_id: entry for entry in leaderboard}
+    assert by_member["a"].total_points == 5
+    assert by_member["a"].exact_hits == 1
+    assert by_member["b"].total_points == 0
+    assert by_member["b"].exact_hits == 0
+
+
 def test_israel_timezone_roundtrip_for_schedule_inputs() -> None:
     parsed = parse_iso_datetime("2026-04-14T10:59")
     assert parsed.isoformat().startswith("2026-04-14T07:59:00")
