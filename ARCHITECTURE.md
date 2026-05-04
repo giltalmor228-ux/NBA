@@ -137,6 +137,7 @@ Responsibilities:
 - bundle export
 - workbook export
 - CSV export
+- safe encoding of binary fields in the JSON snapshot
 - JSON snapshot restore into a recovered pool
 
 ### `app/services/provider.py`
@@ -339,9 +340,9 @@ The app generates:
 - West Round 1
 - East Round 2 placeholders
 - West Round 2 placeholders
-- East Conference Finals
-- West Conference Finals
-- NBA Finals
+- East Conference Finals placeholders
+- West Conference Finals placeholders
+- NBA Finals placeholder
 
 ## Bracket progression
 
@@ -352,7 +353,9 @@ When a result is saved:
 1. the result snapshot is written
 2. downstream windows are revisited
 3. if both required participants are now known, the placeholder teams are materialized
-4. Monkey auto-picks can then be generated for newly resolved windows
+4. the downstream window name is rewritten to the real matchup
+5. this re-materialization can also run again on later page loads, so older recovered pools can self-repair stale placeholder names
+6. Monkey auto-picks can then be generated for newly resolved windows
 
 ## Bracket presentation
 
@@ -405,6 +408,8 @@ Artifacts:
 - `fallback_workbook.xlsx`
 
 `snapshot.json` is the authoritative restore input.
+
+The JSON snapshot may also contain binary-backed user assets, such as loser-spotlight photos. Those values are encoded into a JSON-safe string form during export and decoded again during restore.
 
 Restore behavior:
 

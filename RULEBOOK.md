@@ -170,9 +170,9 @@ The app generates:
 - West Round 1
 - East Round 2 placeholders
 - West Round 2 placeholders
-- East Conference Finals
-- West Conference Finals
-- NBA Finals
+- East Conference Finals placeholders
+- West Conference Finals placeholders
+- NBA Finals placeholder
 
 ## 14. Bracket progression rules
 
@@ -180,6 +180,7 @@ As official results are posted:
 
 - downstream placeholder teams are materialized automatically
 - future windows become real matchups once both teams are known
+- saved downstream board names also update to the real matchup names
 - Monkey can then auto-submit if the board is eligible
 
 ## 15. Finals MVP options
@@ -212,6 +213,7 @@ Recovery behavior:
 
 - `snapshot.json` is the restore source of truth
 - restoring creates a new recovered pool
+- spotlight/loser photos are included in the JSON snapshot as safely encoded data
 
 ## 18. Current implementation constraints
 

@@ -171,7 +171,13 @@ Exports include:
 - CSV extracts
 - `fallback_workbook.xlsx`
 
-`snapshot.json` is the authoritative restore source.ב
+`snapshot.json` is the authoritative restore source.
+
+Important recovery detail:
+
+- uploaded loser-spotlight photos are included in the JSON snapshot too
+- binary image data is encoded safely inside the snapshot so bundle export does not fail when spotlight photos exist
+- restoring from `snapshot.json` recreates those stored spotlight photos in the recovered pool
 
 ## Important implementation notes
 
@@ -210,6 +216,13 @@ Scheduler logic for monkey submissions and auto-locking.
 ### `app/services/recovery.py`
 
 Bundle export and JSON restore.
+
+It is responsible for:
+
+- writing the authoritative `snapshot.json`
+- exporting CSV/operator workbook fallbacks
+- safely encoding binary fields such as loser-spotlight photos
+- restoring a recovered pool from the JSON snapshot
 
 ### `app/data/nba_catalog.py`
 

@@ -261,7 +261,7 @@ The app generates:
 - Conference Finals placeholders
 - NBA Finals placeholder
 
-As upstream winners become known, downstream series receive their real teams automatically.
+As upstream winners become known, downstream series receive their real teams automatically, and the saved board names are updated from placeholders to the actual matchup names.
 
 ## Scheduling behavior
 
@@ -304,6 +304,11 @@ Commissioners can export a recovery bundle containing:
 - `fallback_workbook.xlsx`
 
 The JSON snapshot is the restore source of truth.
+
+Recovery note:
+
+- spotlight/loser photos are included in the JSON snapshot too
+- binary photo data is encoded safely for export and decoded again during restore
 
 ## Current manual-mode assumptions
 
