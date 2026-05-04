@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import csv
 import io
 import json
@@ -31,12 +32,16 @@ TABLES = [
     ("payment_ledger_entries", PaymentLedgerEntry),
 ]
 
+BYTES_PREFIX = "base64:"
+
 
 def _to_value(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
     if isinstance(value, Decimal):
         return float(value)
+    if isinstance(value, (bytes, bytearray)):
+        return f"{BYTES_PREFIX}{base64.b64encode(bytes(value)).decode('ascii')}"
     return value
 
 
@@ -50,6 +55,12 @@ def _to_json_safe(value: Any) -> Any:
 
 def _row_dict(instance: Any) -> dict[str, Any]:
     return {column.name: _to_value(getattr(instance, column.name)) for column in instance.__table__.columns}
+
+
+def _from_value(value: Any) -> Any:
+    if isinstance(value, str) and value.startswith(BYTES_PREFIX):
+        return base64.b64decode(value.removeprefix(BYTES_PREFIX))
+    return value
 
 
 def build_snapshot(session: Session, pool_id: str) -> dict[str, Any]:
@@ -206,6 +217,9 @@ def restore_from_snapshot_json(session: Session, raw_bytes: bytes) -> tuple[Pool
             email=user_row.get("email"),
             nickname=user_row["nickname"],
             avatar=user_row["avatar"],
+            loser_photo_path=user_row.get("loser_photo_path"),
+            loser_photo_content_type=user_row.get("loser_photo_content_type"),
+            loser_photo_blob=_from_value(user_row.get("loser_photo_blob")),
             is_monkey=user_row["is_monkey"],
         )
         session.add(user)

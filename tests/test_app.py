@@ -498,6 +498,7 @@ def test_create_pool_join_and_export_bundle() -> None:
     commissioner_client = TestClient(app)
     player_client = TestClient(app)
     pool_url = create_pool(commissioner_client, "Integration Pool")
+    pool_id = pool_id_from_url(pool_url)
 
     pool_page = commissioner_client.get(f"{pool_url}?tab=overview")
     assert pool_page.status_code == 200
@@ -511,6 +512,16 @@ def test_create_pool_join_and_export_bundle() -> None:
     )
     assert join_response.status_code == 303
 
+    with SessionLocal() as session:
+        commissioner_membership = session.scalar(select(Membership).where(Membership.pool_id == pool_id, Membership.role == "commissioner"))
+        assert commissioner_membership is not None
+        commissioner_user = session.get(User, commissioner_membership.user_id)
+        assert commissioner_user is not None
+        commissioner_user.loser_photo_blob = PNG_1X1
+        commissioner_user.loser_photo_content_type = "image/png"
+        commissioner_user.loser_photo_path = "/static/uploads/loser-photos/commissioner-test.png"
+        session.commit()
+
     export_response = commissioner_client.get(f"{pool_url}/export")
     assert export_response.status_code == 200
     assert export_response.headers["content-type"] == "application/zip"
@@ -521,6 +532,8 @@ def test_create_pool_join_and_export_bundle() -> None:
     assert "fallback_workbook.xlsx" in names
     snapshot = json.loads(archive.read("snapshot.json").decode("utf-8"))
     assert snapshot["pool"]["name"] == "Integration Pool"
+    exported_commissioner = next(user for user in snapshot["users"] if user["nickname"] == "Gil")
+    assert exported_commissioner["loser_photo_blob"].startswith("base64:")
 
 
 def test_team_logo_uses_utah_slug_override() -> None:
