@@ -542,10 +542,15 @@ def _resolve_slot(slot: dict[str, Any], result_payloads: dict[tuple[str, str], d
 
 
 def _series_display_meta(series: dict[str, Any], result_payloads: dict[tuple[str, str], dict[str, Any]]) -> tuple[list[str], list[str]]:
+    resolved, labels = _series_display_state(series, result_payloads)
+    return [team for team in resolved if team], labels
+
+
+def _series_display_state(series: dict[str, Any], result_payloads: dict[tuple[str, str], dict[str, Any]]) -> tuple[list[str | None], list[str]]:
     slots = series.get("slots") or [{"type": "team", "team": team} for team in series.get("teams", [])]
     teams = [_resolve_slot(slot, result_payloads) for slot in slots]
     labels = [team_name(team) if team else _slot_label(slot) for team, slot in zip(teams, slots, strict=False)]
-    return [team for team in teams if team], labels
+    return teams, labels
 
 
 def _series_display_name(series: dict[str, Any]) -> str:
@@ -578,6 +583,26 @@ def _resolved_window_name(window: BettingWindow, series: dict[str, Any], resolve
     if window.round_key == "finals":
         return f"NBA Finals: {left_name} vs {right_name}"
     return generated_window_name(window.round_key, resolved_teams[0], resolved_teams[1])
+
+
+def _unresolved_window_name(window: BettingWindow, series: dict[str, Any], labels: list[str]) -> str:
+    conference = series.get("conference")
+    left_label = labels[0] if labels else "TBD"
+    right_label = labels[1] if len(labels) > 1 else "TBD"
+    if window.round_key == "play_in":
+        prefix = f"{conference} Play-In" if conference else "Play-In"
+        return f"{prefix}: {left_label} vs {right_label}"
+    if window.round_key == "round_1":
+        prefix = f"{conference} Round 1" if conference else "Round 1"
+        return f"{prefix}: {left_label} vs {right_label}"
+    if window.round_key == "round_2":
+        prefix = f"{conference} Semifinal" if conference else "Semifinal"
+        return f"{prefix}: {left_label} vs {right_label}"
+    if window.round_key == "conference_finals":
+        return f"{conference} Conference Finals" if conference else "Conference Finals"
+    if window.round_key == "finals":
+        return "NBA Finals"
+    return window.name
 
 
 def _generate_monkey_payload(window: BettingWindow) -> dict[str, Any]:
@@ -644,15 +669,18 @@ def _materialize_resolved_windows(session: Session, pool_id: str) -> bool:
         updated_name = window.name
         for series in window.config.get("series", []):
             updated_series = dict(series)
-            resolved_teams, _ = _series_display_meta(series, result_payloads)
-            if len(resolved_teams) == 2 and updated_series.get("teams") != resolved_teams:
-                updated_series["teams"] = resolved_teams
+            resolved_team_values, labels = _series_display_state(series, result_payloads)
+            current_teams = [team if team else "TBD" for team in resolved_team_values]
+            if updated_series.get("teams") != current_teams:
+                updated_series["teams"] = current_teams
                 changed = True
-            if len(resolved_teams) == 2:
-                new_name = _resolved_window_name(window, updated_series, resolved_teams)
-                if new_name != updated_name:
-                    updated_name = new_name
-                    changed = True
+            if all(team != "TBD" for team in current_teams):
+                new_name = _resolved_window_name(window, updated_series, current_teams)
+            else:
+                new_name = _unresolved_window_name(window, updated_series, labels)
+            if new_name != updated_name:
+                updated_name = new_name
+                changed = True
             series_list.append(updated_series)
         if changed:
             window.config = {**window.config, "series": series_list}
@@ -660,6 +688,26 @@ def _materialize_resolved_windows(session: Session, pool_id: str) -> bool:
             any_changed = True
         _ensure_monkey_submission(session, window)
     return any_changed
+
+
+def _dependent_series_keys(windows: list[BettingWindow], series_keys: set[str]) -> set[str]:
+    children: dict[str, set[str]] = {}
+    for window in windows:
+        for series in window.config.get("series", []):
+            current_key = series.get("series_key")
+            for slot in series.get("slots", []):
+                dependency_key = slot.get("series_key")
+                if dependency_key and slot.get("type") in {"winner_of", "loser_of", "play_in_seed"}:
+                    children.setdefault(dependency_key, set()).add(current_key)
+    affected = set(series_keys)
+    queue = list(series_keys)
+    while queue:
+        current = queue.pop(0)
+        for child in children.get(current, set()):
+            if child not in affected:
+                affected.add(child)
+                queue.append(child)
+    return affected
 
 
 def _latest_early_payload(session: Session, pool_id: str) -> dict[str, Any]:
@@ -2842,6 +2890,40 @@ async def post_result(
         url=redirect_with_message(pool_id, "commissioner", "success", message),
         status_code=303,
     )
+
+
+@app.post("/pools/{pool_id}/results/{series_key}/reset")
+def reset_series_result(
+    pool_id: str,
+    series_key: str,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> Response:
+    commissioner = require_commissioner(request, session, pool_id)
+    windows = session.scalars(select(BettingWindow).where(BettingWindow.pool_id == pool_id)).all()
+    affected_series_keys = _dependent_series_keys(windows, {series_key})
+    deleted_count = (
+        session.query(ResultSnapshot)
+        .filter(
+            ResultSnapshot.pool_id == pool_id,
+            ResultSnapshot.scope_type == "series",
+            ResultSnapshot.scope_key.in_(affected_series_keys),
+        )
+        .delete(synchronize_session=False)
+    )
+    session.add(
+        EventLog(
+            pool_id=pool_id,
+            actor_member_id=commissioner.id,
+            event_type="result_reset",
+            payload={"scope_key": series_key, "cleared_series_keys": sorted(affected_series_keys), "deleted_count": deleted_count},
+        )
+    )
+    session.flush()
+    _materialize_resolved_windows(session, pool_id)
+    session.commit()
+    message = f"Reset result(s) for {series_key}." if deleted_count else f"No saved results were found for {series_key}."
+    return RedirectResponse(url=redirect_with_message(pool_id, "commissioner", "success", message), status_code=303)
 
 
 @app.post("/pools/{pool_id}/results/early-field")

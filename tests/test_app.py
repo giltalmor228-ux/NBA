@@ -1738,6 +1738,68 @@ def test_load_pool_context_repairs_stale_downstream_window_names() -> None:
     assert "West Round 1: San Antonio Spurs vs West #7" not in commissioner_page.text
 
 
+def test_resetting_series_result_rewinds_downstream_progression() -> None:
+    commissioner_client = TestClient(app)
+    pool_url = create_pool(commissioner_client, "Result Reset Pool")
+    pool_id = pool_id_from_url(pool_url)
+
+    grouped_teams = teams_by_conference()
+    east_seeds = [team.code for team in grouped_teams["East"][:10]]
+    west_seeds = [team.code for team in grouped_teams["West"][:10]]
+
+    response = commissioner_client.post(
+        f"{pool_url}/generate-bracket",
+        data={
+            "opens_at": "2026-04-14T12:00",
+            "locks_at": "2026-04-16T19:00",
+            **{f"east_seed_{index}": team for index, team in enumerate(east_seeds, start=1)},
+            **{f"west_seed_{index}": team for index, team in enumerate(west_seeds, start=1)},
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    play_in_results = {
+        "play_in-east-7v8": east_seeds[6],
+        "play_in-east-9v10": east_seeds[8],
+        "play_in-east-8seed": east_seeds[7],
+    }
+    for series_key, winner in play_in_results.items():
+        save_series_result(commissioner_client, pool_url, find_window_by_series_key(pool_id, series_key), winner, games_count=1)
+
+    round_one_results = {
+        "round_1-east-1v8": (east_seeds[0], 7),
+        "round_1-east-4v5": (east_seeds[4], 6),
+        "round_1-east-2v7": (east_seeds[1], 6),
+        "round_1-east-3v6": (east_seeds[2], 5),
+    }
+    for series_key, (winner, games_count) in round_one_results.items():
+        save_series_result(commissioner_client, pool_url, find_window_by_series_key(pool_id, series_key), winner, games_count=games_count)
+
+    round_two_top = find_window_by_series_key(pool_id, "round_2-east-top")
+    assert round_two_top.config["series"][0]["teams"] == [east_seeds[0], east_seeds[4]]
+    save_series_result(commissioner_client, pool_url, round_two_top, east_seeds[4], games_count=7)
+
+    with SessionLocal() as session:
+        context_before_reset = load_pool_context(session, pool_id)
+        east_cf_before = next(window for window in context_before_reset["windows"] if any(series.get("series_key") == "conference_finals-east" for series in window.config.get("series", [])))
+        east_cf_before_series = east_cf_before.render_series[0]
+        assert [team["name"] for team in east_cf_before_series["team_details"]] == [TEAM_BY_CODE[east_seeds[4]].name, "Winner of round_2-east-bottom"]
+
+    reset_response = commissioner_client.post(f"{pool_url}/results/round_2-east-top/reset", follow_redirects=False)
+    assert reset_response.status_code == 303
+
+    with SessionLocal() as session:
+        assert session.scalars(select(ResultSnapshot).where(ResultSnapshot.pool_id == pool_id, ResultSnapshot.scope_key == "round_2-east-top")).all() == []
+        context_after_reset = load_pool_context(session, pool_id)
+        round_two_top_after = next(window for window in context_after_reset["windows"] if any(series.get("series_key") == "round_2-east-top" for series in window.config.get("series", [])))
+        east_cf_after = next(window for window in context_after_reset["windows"] if any(series.get("series_key") == "conference_finals-east" for series in window.config.get("series", [])))
+        assert round_two_top_after.render_series[0]["resolved"] is True
+        assert [team["name"] for team in round_two_top_after.render_series[0]["team_details"]] == [TEAM_BY_CODE[east_seeds[0]].name, TEAM_BY_CODE[east_seeds[4]].name]
+        assert east_cf_after.render_series[0]["resolved"] is False
+        assert [team["name"] for team in east_cf_after.render_series[0]["team_details"]] == ["Winner of round_2-east-top", "Winner of round_2-east-bottom"]
+
+
 def test_full_random_bracket_simulation_through_finals() -> None:
     rng = random.Random(20260413)
     commissioner_client = TestClient(app)
